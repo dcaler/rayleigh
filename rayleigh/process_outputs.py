@@ -18,7 +18,10 @@ Deliverables, two audiences:
     (prose), `findings.json` (structured per-experiment: prereg + observed finding + artifact
     pointers), and `tables/*.csv` (the aggregated numbers). This is rayleigh's reason to exist.
   - for the human: `results/{cycle}_{project}_results_{ra}.docx` (the ra/DCR review cycle;
-    python-docx, degrades to RESULTS.md if unavailable), plus figures in `results/figures/`.
+    python-docx, degrades to RESULTS.md if unavailable).
+
+Every figure is rendered to `results/figures/` in both PNG (embeds in the .docx / markdown
+preview) and SVG (vector, for publication); findings.json lists all formats per figure.
 """
 
 import importlib
@@ -36,6 +39,11 @@ from rayleigh.conduct_exp import expand_cells, resolve_cell_outputs  # reuse cel
 
 def log(msg: str) -> None:
     print(f"[rayleigh process_outputs] {msg}", flush=True)
+
+
+# Every figure is emitted in each format: PNG (embeds in the .docx / RESULTS.md preview) and
+# SVG (vector, for publication). findings.json lists all of them per figure.
+FIGURE_FORMATS = ("png", "svg")
 
 
 # --------------------------------------------------------------------- loading cells
@@ -128,7 +136,9 @@ def _slug(s: str) -> str:
 
 
 def render_figure(df, spec: dict, eid: str, idx: int, figdir: Path):
-    """Render one planned figure to results/figures/. Returns (path, caption) or None."""
+    """Render one planned figure to results/figures/, in every configured format.
+    Returns (primary_path, [all_paths], caption) or None. The primary (PNG) embeds in the
+    .docx and RESULTS.md; the vector formats (SVG) are for publication."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -172,10 +182,15 @@ def render_figure(df, spec: dict, eid: str, idx: int, figdir: Path):
             return None
         ax.set_title(caption, fontsize=9)
         fig.tight_layout()
-        path = figdir / f"{eid}_{idx}_{_slug(caption)}.png"
-        fig.savefig(path, dpi=120, bbox_inches="tight")
+        stem = f"{eid}_{idx}_{_slug(caption)}"
+        paths = []
+        for fmt in FIGURE_FORMATS:                       # PNG (docx/preview) + SVG (vector)
+            p = figdir / f"{stem}.{fmt}"
+            fig.savefig(p, dpi=120, bbox_inches="tight")
+            paths.append(p)
         plt.close(fig)
-        return path, caption
+        primary = next((p for p in paths if p.suffix == ".png"), paths[0])
+        return primary, paths, caption
     except Exception as e:                           # noqa: BLE001
         log(f"  {eid} fig {idx}: render failed ({type(e).__name__}: {e}) — skipped")
         return None
@@ -247,8 +262,8 @@ def _build_markdown(project, cycle, brief, items, results: Path) -> str:
         if exp.get("question"):
             L.append(f"**Question:** {exp['question']}\n")
         L.append(f"**Finding:** {it['finding']}\n")
-        for path, cap in it["figures"]:
-            rel = path.relative_to(results)
+        for primary, _all, cap in it["figures"]:
+            rel = primary.relative_to(results)   # PNG embeds in the markdown preview
             L.append(f"![{cap}]({rel})\n\n*{cap}*\n")
         for piv, cap in it["tables"]:
             L.append(_pivot_to_md(piv) + f"\n\n*{cap}*\n")
@@ -281,8 +296,11 @@ def _build_findings(project, cycle, brief, items, results: Path) -> str:
             "expected_direction": exp.get("expected_direction", ""),
             "finding": it["finding"],
             "cells": {"with_data": it["n_data"], "total": it["n_cells"]},
-            "figures": [{"path": str(p.relative_to(results)), "caption": c}
-                        for p, c in it["figures"]],
+            "figures": [{"path": str(primary.relative_to(results)),
+                         "formats": {p.suffix.lstrip("."): str(p.relative_to(results))
+                                     for p in all_paths},
+                         "caption": c}
+                        for primary, all_paths, c in it["figures"]],
             "tables": [{"path": str(p.relative_to(results)), "caption": c}
                        for p, c in it.get("table_files", [])],
         })
@@ -310,8 +328,8 @@ def _build_docx(path: Path, project, cycle, brief, items, author) -> bool:
         f = doc.add_paragraph()
         f.add_run("Finding: ").bold = True
         f.add_run(it["finding"])
-        for fig_path, cap in it["figures"]:
-            doc.add_picture(str(fig_path), width=Inches(5.5))
+        for primary, _all, cap in it["figures"]:
+            doc.add_picture(str(primary), width=Inches(5.5))   # PNG — docx can't embed SVG
             doc.add_paragraph(cap).italic = True
         for piv, cap in it["tables"]:
             t = doc.add_table(rows=1, cols=len(piv.columns) + 1)
@@ -387,7 +405,7 @@ def run_process_outputs(args) -> int:
             if o.get("kind") == "figure":
                 r = render_figure(df, o, eid, i, figdir)
                 if r:
-                    figs.append(r)
+                    figs.append(r)   # (primary_png, [all_format_paths], caption)
             elif o.get("kind") == "table":
                 r = render_table(df, o, eid)
                 if r:

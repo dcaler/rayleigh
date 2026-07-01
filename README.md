@@ -142,7 +142,11 @@ It writes two kinds of deliverable, because rayleigh's reason to exist is to fee
   `RESULTS.md` (prose), **`findings.json`** (structured per-experiment — prereg + observed
   finding + pointers to each figure/table), and **`tables/*.csv`** (the aggregated numbers).
 - **For you**: the datestamped `results/{cycle}_{project}_results_ra.docx` (your ra/DCR
-  annotation cycle; degrades to Markdown-only if python-docx is absent), plus `figures/`.
+  annotation cycle; degrades to Markdown-only if python-docx is absent).
+
+Every figure is written to `results/figures/` in both **PNG** (embeds in the `.docx` and the
+markdown preview) and **SVG** (vector, for publication); `findings.json` lists all formats per
+figure so a downstream tool can pick the one it needs.
 
 ## Run at scale (trundlr)
 
