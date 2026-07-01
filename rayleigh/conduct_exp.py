@@ -39,6 +39,15 @@ def log(msg: str) -> None:
     print(f"[rayleigh conduct_exp] {msg}", flush=True)
 
 
+def add_import_paths(*dirs) -> None:
+    """Make an `import`-kind adapter resolvable: put its candidate homes on sys.path.
+    The run-adapter shim (and the output_adapter loader) may live in code/ OR results/, so
+    both are searched. Shared by conduct_exp and process_outputs."""
+    for d in dirs:
+        if d and str(d) not in sys.path:
+            sys.path.insert(0, str(d))
+
+
 # --------------------------------------------------------------------- spec + cells
 def _load_spec(results: Path) -> dict:
     spec_path = results / "designdocs" / "experiments.yaml"
@@ -131,9 +140,9 @@ def _execute_cell(job: dict) -> dict:
         p.parent.mkdir(parents=True, exist_ok=True)
     try:
         if job["kind"] == "import":
-            code_dir = job["code_dir"]
-            if code_dir and code_dir not in sys.path:
-                sys.path.insert(0, code_dir)
+            # The adapter shim may live in code/ OR results/ (both documented). Put both on
+            # sys.path so `import <shim>` resolves wherever the design session authored it.
+            add_import_paths(job["code_dir"], job.get("results_dir"))
             mod_name, _, fn_name = job["entrypoint"].partition(":")
             if not fn_name:
                 raise ValueError(f"entrypoint '{job['entrypoint']}' must be 'module:callable'")
@@ -282,7 +291,7 @@ def run_conduct_exp(args) -> int:
     jobs = [{
         "experiment": eid, "kind": kind, "multi": multi, "params": c["params"], "seed": c["seed"],
         "outputs": {n: str(p) for n, p in c["outputs"].items()},
-        "code_dir": str(code_dir), "code_sha": sha,
+        "code_dir": str(code_dir), "results_dir": str(results), "code_sha": sha,
         "cwd": str(root),   # subprocess commands run from the project root
         "entrypoint": adapter.get("entrypoint"), "command": adapter.get("command"),
         "config_path": str(results / "data" / eid / "_configs"

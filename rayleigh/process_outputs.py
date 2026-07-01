@@ -34,7 +34,7 @@ from pathlib import Path
 import yaml
 
 from rayleigh import __version__
-from rayleigh.conduct_exp import expand_cells, resolve_cell_outputs  # reuse cell logic
+from rayleigh.conduct_exp import expand_cells, resolve_cell_outputs, add_import_paths  # reuse cell logic
 
 
 def log(msg: str) -> None:
@@ -85,12 +85,12 @@ def _default_load(outputs: dict) -> dict:
     return merged
 
 
-def _get_loader(spec: dict, code_dir: Path):
+def _get_loader(spec: dict, code_dir: Path, results: Path):
     ep = ((spec.get("code") or {}).get("output_adapter") or {}).get("load")
     if not ep:
         return _default_load
-    if str(code_dir) not in sys.path:
-        sys.path.insert(0, str(code_dir))
+    # the loader shim may live in code/ OR results/ (same as the run-adapter) — search both
+    add_import_paths(code_dir, results)
     mod_name, _, fn_name = ep.partition(":")
     return getattr(importlib.import_module(mod_name), fn_name)
 
@@ -383,7 +383,7 @@ def run_process_outputs(args) -> int:
     figdir = results / "figures"
     figdir.mkdir(parents=True, exist_ok=True)
     tabledir = results / "tables"
-    loader = _get_loader(spec, code_dir)
+    loader = _get_loader(spec, code_dir, results)
 
     dry = getattr(args, "dry_run", False)
     items = []
