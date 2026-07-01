@@ -37,8 +37,14 @@ What each prior gives you:
 - **`paper/` (raconteur)** — the argument and venue: **which questions matter** and what a
   result has to support. This is where experiment *priorities* come from.
 
-Also read `designdocs/EXPERIMENTS.md` and `experiments.yaml` (the skeletons you'll fill) and
-the brief above. Then draft a proposed set of experiments and walk the user through them.
+Also read `designdocs/EXPERIMENTS.md` and `experiments.yaml` (the skeletons you'll fill).
+
+**Intake first — this is a conversation.** The brief above may be thin or empty: `init` no
+longer prompts for it, because pinning down what's worth finding out is the actual work of
+this session, and a text box can't do it. Grounded in the priors, ask the user what they want
+to find out this cycle and draw it out in discussion. Then draft a proposed set of experiments
+from the intake + priors, walk the user through them, and write the finalized brief back into
+`rayleigh.yaml`.
 
 Read `{{CODE_PATH}}/` for the codebase specifics — its README / CLAUDE.md, its CLI, and its
 config schema. You are looking for three things (they become the `run_adapter`):

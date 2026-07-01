@@ -66,7 +66,7 @@ Run **from the project root** (alongside `code/`, and any `paper/` / `litReview/
 
 ```bash
 cd ~/work/260623_myproject
-rayleigh init                 # scaffold results/, take the brief, launch the design session
+rayleigh init                 # scaffold results/, index priors, launch the design session
 rayleigh init --no-launch     # scaffold only; print the playbook path to drive it yourself
 rayleigh init --new-cycle     # roll to a fresh {YYMMDD} cycle, archiving the prior one
 ```

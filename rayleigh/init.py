@@ -12,7 +12,6 @@ import json
 import re
 import shutil
 import subprocess
-import sys
 from datetime import date
 from importlib.resources import files
 from pathlib import Path
@@ -22,13 +21,16 @@ import yaml
 from rayleigh.config import Config, load_config
 
 DESIGN_PROMPT = (
-    "You are running the `rayleigh init` design session. Read results/designdocs/PLANNING.md "
-    "and follow it. First read results/designdocs/PRIORS.md — the index of what the earlier ra* "
-    "tools left (the raster-built code/, the rabbitHole litReview/, the raconteur paper/) — and "
-    "the artifacts it points to, plus the brief (results/rayleigh.yaml `brief:`). Synthesize them "
-    "into a PROPOSED starting experiment design, then refine it with me and write "
+    "You are running the `rayleigh init` design session — an interactive research-design "
+    "conversation, not a form-filler. Read results/designdocs/PLANNING.md and follow it. First "
+    "read results/designdocs/PRIORS.md — the index of what the earlier ra* tools left (the "
+    "raster-built code/, the rabbitHole litReview/, the raconteur paper/) — and the artifacts it "
+    "points to. Then run the INTAKE with me: the brief in results/rayleigh.yaml may be thin or "
+    "empty, so (grounded in the priors) ask me what I want to find out this cycle and draw it out "
+    "in discussion. From that + the priors, propose a starting experiment design, refine it with "
+    "me, and write the finalized brief into results/rayleigh.yaml plus "
     "results/designdocs/experiments.yaml (incl. the run_adapter from code/) and EXPERIMENTS.md. "
-    "Start by reading PLANNING.md and PRIORS.md."
+    "Start by reading PLANNING.md and PRIORS.md, then talk to me."
 )
 
 
@@ -64,39 +66,6 @@ def render(template_name: str, ctx: dict) -> str:
     for key, val in ctx.items():
         text = text.replace("{{" + key + "}}", str(val))
     return text
-
-
-def ask(prompt: str, default=None, preset=None) -> str:
-    """Prompt unless a preset (CLI arg) is given. Non-interactive -> default."""
-    if preset is not None:
-        return preset
-    suffix = f" [{default}]" if default not in (None, "") else ""
-    if not sys.stdin.isatty():
-        return "" if default is None else str(default)
-    try:
-        resp = input(f"  {prompt}{suffix}: ").strip()
-    except EOFError:
-        resp = ""
-    return resp or ("" if default is None else str(default))
-
-
-def ask_longform(prompt: str, preset=None) -> str:
-    """Read a multi-line, free-form answer (the research brief). A preset short-circuits;
-    non-interactive -> empty. Interactively, end with Ctrl-D on a blank line."""
-    if preset is not None:
-        return preset
-    if not sys.stdin.isatty():
-        return ""
-    print(f"  {prompt}")
-    print("  (write as much as you like — the more the design session has to work with, the")
-    print("   better; finish with Ctrl-D on a blank line)")
-    lines = []
-    try:
-        while True:
-            lines.append(input())
-    except EOFError:
-        pass
-    return "\n".join(lines).strip()
 
 
 def archive_cycle(results: Path, prior_cycle: str) -> None:
@@ -239,16 +208,15 @@ def run_init(args) -> int:
     else:
         cycle = prior_cycle or today
 
-    name = ask("Project name",
-               default=prior.get("project") or project_name_from_dir(root.name),
-               preset=args.name)
-    brief = ask_longform("What do you want to find out this cycle?", preset=args.brief).strip()
-    if not brief:
-        brief = (prior.get("brief") or "").strip()
-    if not brief:
-        brief = _derive_brief(root)
-        if brief:
-            log("brief taken from code/raster.yaml (edit results/rayleigh.yaml to refine)")
+    # No interactive prompting here — the intake ("what do you want to find out?") is the
+    # intellectual work, so the launched Claude session does it, grounded in the priors it
+    # reads. init only resolves deterministic defaults; the session refines them with the user.
+    name = (args.name or prior.get("project") or project_name_from_dir(root.name)).strip()
+    brief = (args.brief or prior.get("brief") or _derive_brief(root) or "").strip()
+    if brief:
+        log(f"starting brief: {brief[:70]}{'…' if len(brief) > 70 else ''}")
+    else:
+        log("no brief yet — the design session will elicit it from you + the priors")
 
     code_dir = root / "code"
     package = detect_package(code_dir, slugify(name))
