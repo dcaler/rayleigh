@@ -120,5 +120,13 @@ experiments freely.
   confirmatory experiment has a metric, expected_direction, and outputs).
 - `EXPERIMENTS.md` mirrors them in prose, with the research question and the codebase notes.
 - Add a row per experiment to `designdocs/PROGRESS.md` (⬜ designed).
-- Tell the user the next step: `rayleigh conduct_exp <id>` to run an experiment's cells,
-  then `rayleigh process_outputs` to render the write-up.
+- Tell the user the next step, and offer BOTH ways to run:
+  - **Locally** — `rayleigh conduct_exp <id>` per experiment (each fans its cells out on this
+    machine), then `rayleigh process_outputs` to render the write-up. Good for a smoke subset
+    or a few small experiments.
+  - **At scale** — `rayleigh queue` submits the whole chain to trundlr (one `conduct_exp`
+    node per experiment on its `resource:` cpu/gpu, then a final `process_outputs`), so big
+    sweeps don't tie up this machine. The per-experiment `workers`, `resource`, and
+    `budget_hours` you set above are what `queue` schedules on. Preview it with
+    `rayleigh queue --dry-run`.
+  Recommend the local smoke path first (cheap, fast feedback), then `queue` for the full run.
