@@ -18,6 +18,8 @@ rayleigh conduct_exp <E>  ▸ expand an experiment's design into cells and run t
                             code/ (restartable, provenance)
 rayleigh process_outputs  ▸ reduce data → the preregistered outputs → findings →
                             the datestamped .docx write-up
+rayleigh queue            ▸ linearize experiments.yaml → a trundlr chain, for running
+                            at scale off your laptop
 ```
 
 rayleigh lives at `github.com/dcaler/rayleigh`. Each project it works on has its own
@@ -122,7 +124,26 @@ and pivot tables — with an honest **finding** (observed summary next to the pr
 `results/RESULTS.md` and the datestamped `results/{cycle}_{project}_results_ra.docx` (that
 `.docx` enters your ra/DCR annotation cycle; degrades to Markdown-only if python-docx is absent).
 
+## Run at scale (trundlr)
+
+Local `conduct_exp` + `process_outputs` cover small/medium experiments. For big
+(elephantRoom-size) sweeps you don't want pinning your laptop, `queue` offloads to trundlr:
+
+```bash
+rayleigh queue --dry-run     # preview the chain, submit nothing
+rayleigh queue               # submit conduct_exp E1 → E2 → … → process_outputs
+```
+
+It builds a flat, single-parent chain — one `conduct_exp` node per experiment, then a final
+`process_outputs` — and each `conduct_exp` node still fans its cells out locally (its own
+`ProcessPoolExecutor`) on the machine trundlr assigns it. So the coarse experiment chain
+rides trundlr while the cell fan-out stays local. Resources + `project_id` come from the
+`trundlr:` block in `results/rayleigh.yaml` (defaults from `~/.config/rayleigh/config.toml`);
+a name-form `project_id` is resolved to a numeric id and cached on first `queue`. Per
+experiment, `budget_hours:` sets its trundlr scheduling window.
+
 ## Status
 
-All three verbs are implemented: `init` (design), `conduct_exp` (run), `process_outputs`
-(write up). The full loop — design → conduct → write up → `.docx` — works end to end.
+All four verbs are implemented: `init` (design), `conduct_exp` (run), `process_outputs`
+(write up), and `queue` (submit the chain to trundlr for scale). The full loop —
+design → conduct → write up → `.docx` — works end to end, locally or on the cluster.

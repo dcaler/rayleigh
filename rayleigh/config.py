@@ -71,8 +71,11 @@ user_initials = "DCR"        # the human reviewer's initials (the annotated-file
 design = "claude"            # interactive design/prereg session
 
 [trundlr]
-# reserved: the coarse experiment chain is deferred (local fan-out for now).
-api_url = "http://100.87.86.57:8251"
+# `rayleigh queue` offloads the coarse experiment chain here (each conduct_exp node still
+# fans its cells out locally on its assigned machine).
+api_url          = "http://100.87.86.57:8251"
+compute_resource = 2         # runs `rayleigh conduct_exp` (the cell fan-out)
+cpu_resource     = 3         # runs `rayleigh process_outputs`
 """
 
 
@@ -88,6 +91,8 @@ class Config:
     user_initials: str = "DCR"
     design_model: str = "claude"
     trundlr_api: str = "http://100.87.86.57:8251"
+    compute_resource: int = 2
+    cpu_resource: int = 3
 
 
 def load_config(create: bool = True) -> Config:
@@ -111,6 +116,8 @@ def load_config(create: bool = True) -> Config:
         user_initials=a.get("user_initials", Config.user_initials),
         design_model=m.get("design", Config.design_model),
         trundlr_api=t.get("api_url", Config.trundlr_api),
+        compute_resource=int(t.get("compute_resource", Config.compute_resource)),
+        cpu_resource=int(t.get("cpu_resource", Config.cpu_resource)),
     )
     cfg.trundlr_api = os.environ.get("RAYLEIGH_TRUNDLR_API", cfg.trundlr_api)
     return cfg

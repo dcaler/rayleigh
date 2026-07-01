@@ -13,6 +13,8 @@ Verbs:
                            code/ (restartable, provenance)
   rayleigh process_outputs reduce data -> the preregistered outputs -> findings -> the
                            datestamped .docx write-up
+  rayleigh queue           linearize experiments.yaml -> a trundlr chain (conduct_exp per
+                           experiment, then process_outputs) for running at scale
 
 The atomic unit is the experiment (question + design + metric + outputs = one finding);
 a sweep is the common interior shape of an experiment's design.

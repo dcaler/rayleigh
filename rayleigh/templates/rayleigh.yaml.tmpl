@@ -15,5 +15,10 @@ author:
   tool_initials: {{TOOL_INITIALS}}   # trailing suffix on tool-authored files (revision chain)
   user_initials: {{USER_INITIALS}}   # the human reviewer's initials
 
+trundlr:                      # used by `rayleigh queue` (optional — local runs need none of this)
+  api_url: {{TRUNDLR_API}}
+  project_id: {{PROJECT}}     # numeric trundlr id or a name (resolved + cached on first `queue`)
+  resources: {compute: {{COMPUTE}}, cpu: {{CPU}}}   # compute = conduct_exp; cpu = process_outputs
+
 # The executable experiment spec is designdocs/experiments.yaml (also git-ignored),
 # authored during `rayleigh init` and consumed by `conduct_exp` and `process_outputs`.

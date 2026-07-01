@@ -46,6 +46,12 @@ def build_parser() -> argparse.ArgumentParser:
     process.add_argument("--dry-run", action="store_true",
                          help="report data availability + planned outputs; render nothing")
 
+    queue = sub.add_parser("queue",
+                           help="linearize experiments.yaml -> submit the trundlr run chain")
+    _common(queue)
+    queue.add_argument("--dry-run", action="store_true", help="print the chain, create nothing")
+    queue.add_argument("--exec-cmd", help="command the trundlr runner invokes (default: rayleigh)")
+
     return ap
 
 
@@ -60,6 +66,9 @@ def main(argv=None) -> int:
     if args.cmd == "process_outputs":
         from rayleigh.process_outputs import run_process_outputs
         return run_process_outputs(args)
+    if args.cmd == "queue":
+        from rayleigh.queue import run_queue
+        return run_queue(args)
     return 1
 
 
