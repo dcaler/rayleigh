@@ -42,18 +42,23 @@ def _cache_project_id(results: Path, pid: int) -> None:
         log(f"cached project id {pid} in results/rayleigh.yaml")
 
 
-def linearize(spec: dict, exec_cmd: str, compute, cpu) -> list:
-    """Flat single-parent chain: conduct_exp per experiment, then a final process_outputs."""
+def linearize(spec: dict, exec_cmd: str, resources: dict) -> list:
+    """Flat single-parent chain: conduct_exp per experiment (each on its own `resource:`
+    cpu|gpu), then a final process_outputs (always cpu)."""
+    cpu = resources["cpu"]
     chain = []
     for exp in spec.get("experiments", []) or []:
         eid = str(exp["id"])
         hours = float(exp.get("budget_hours", DEFAULT_CONDUCT_HOURS))
+        kind = str(exp.get("resource", "cpu")).lower()
+        rid = resources.get(kind, cpu)               # unknown/absent -> cpu
         chain.append({
             "id": eid,
             "title": f"rayleigh: conduct_exp {eid}",
             "description": exp.get("title", "") or f"conduct experiment {eid}",
             "command": f"{exec_cmd} conduct_exp {eid}",
-            "resources": [compute],
+            "resources": [rid],
+            "resource_kind": kind if kind in resources else "cpu",
             "duration": hours,
         })
     if chain:                          # only add the write-up if there is something to run
@@ -63,6 +68,7 @@ def linearize(spec: dict, exec_cmd: str, compute, cpu) -> list:
             "description": "reduce cell data -> preregistered outputs + the .docx write-up",
             "command": f"{exec_cmd} process_outputs",
             "resources": [cpu],
+            "resource_kind": "cpu",
             "duration": DEFAULT_PROCESS_HOURS,
         })
     return chain
@@ -87,20 +93,20 @@ def run_queue(args) -> int:
     tr = meta.get("trundlr", {}) or {}
     cfg = load_config()
     res = tr.get("resources", {}) or {}
-    compute = res.get("compute", cfg.compute_resource)
-    cpu = res.get("cpu", cfg.cpu_resource)
+    resources = {"gpu": res.get("gpu", cfg.gpu_resource),
+                 "cpu": res.get("cpu", cfg.cpu_resource)}
     api = tr.get("api_url") or cfg.trundlr_api
 
     exec_cmd = args.exec_cmd or os.environ.get("RAYLEIGH_EXEC_CMD", "rayleigh")
-    chain = linearize(spec, exec_cmd, compute, cpu)
+    chain = linearize(spec, exec_cmd, resources)
 
     if getattr(args, "dry_run", False):
         total = sum(c["duration"] for c in chain)
         log(f"{len(chain)} tasks (~{total:.2f}h), exec_cmd={exec_cmd!r}, api={api}:")
         for i, c in enumerate(chain):
             dep = chain[i - 1]["id"] if i else "—"
-            resv = ",".join(map(str, c["resources"]))
-            print(f"  {c['title']:34} res={resv:4}  {c['duration']:.2f}h  "
+            resv = f"{c['resources'][0]}({c['resource_kind']})"
+            print(f"  {c['title']:34} res={resv:8}  {c['duration']:.2f}h  "
                   f"dep={dep:16} [{c['command']}]")
         return 0
 

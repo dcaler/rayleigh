@@ -72,10 +72,11 @@ design = "claude"            # interactive design/prereg session
 
 [trundlr]
 # `rayleigh queue` offloads the coarse experiment chain here (each conduct_exp node still
-# fans its cells out locally on its assigned machine).
-api_url          = "http://100.87.86.57:8251"
-compute_resource = 2         # runs `rayleigh conduct_exp` (the cell fan-out)
-cpu_resource     = 3         # runs `rayleigh process_outputs`
+# fans its cells out locally on its assigned machine). `init` picks conduct_exp's resource
+# per project: CPU-bound sims -> cpu_resource; GPU-accelerated models -> gpu_resource.
+api_url      = "http://100.87.86.57:8251"
+gpu_resource = 2             # conduct_exp for GPU-accelerated models
+cpu_resource = 3             # conduct_exp for CPU-bound sims, and always process_outputs
 """
 
 
@@ -91,7 +92,7 @@ class Config:
     user_initials: str = "DCR"
     design_model: str = "claude"
     trundlr_api: str = "http://100.87.86.57:8251"
-    compute_resource: int = 2
+    gpu_resource: int = 2
     cpu_resource: int = 3
 
 
@@ -116,7 +117,7 @@ def load_config(create: bool = True) -> Config:
         user_initials=a.get("user_initials", Config.user_initials),
         design_model=m.get("design", Config.design_model),
         trundlr_api=t.get("api_url", Config.trundlr_api),
-        compute_resource=int(t.get("compute_resource", Config.compute_resource)),
+        gpu_resource=int(t.get("gpu_resource", Config.gpu_resource)),
         cpu_resource=int(t.get("cpu_resource", Config.cpu_resource)),
     )
     cfg.trundlr_api = os.environ.get("RAYLEIGH_TRUNDLR_API", cfg.trundlr_api)

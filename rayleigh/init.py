@@ -178,7 +178,7 @@ def run_init(args) -> int:
         "TOOL_INITIALS": cfg.tool_initials,
         "USER_INITIALS": cfg.user_initials,
         "TRUNDLR_API": cfg.trundlr_api,
-        "COMPUTE": cfg.compute_resource,
+        "GPU_RES": cfg.gpu_resource,
         "CPU": cfg.cpu_resource,
         "DATE": date.today().isoformat(),
     }

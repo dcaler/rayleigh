@@ -18,7 +18,7 @@ author:
 trundlr:                      # used by `rayleigh queue` (optional — local runs need none of this)
   api_url: {{TRUNDLR_API}}
   project_id: {{PROJECT}}     # numeric trundlr id or a name (resolved + cached on first `queue`)
-  resources: {compute: {{COMPUTE}}, cpu: {{CPU}}}   # compute = conduct_exp; cpu = process_outputs
+  resources: {gpu: {{GPU_RES}}, cpu: {{CPU}}}   # each experiment's `resource: cpu|gpu` picks one; process_outputs = cpu
 
 # The executable experiment spec is designdocs/experiments.yaml (also git-ignored),
 # authored during `rayleigh init` and consumed by `conduct_exp` and `process_outputs`.

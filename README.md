@@ -137,10 +137,19 @@ rayleigh queue               # submit conduct_exp E1 → E2 → … → process_
 It builds a flat, single-parent chain — one `conduct_exp` node per experiment, then a final
 `process_outputs` — and each `conduct_exp` node still fans its cells out locally (its own
 `ProcessPoolExecutor`) on the machine trundlr assigns it. So the coarse experiment chain
-rides trundlr while the cell fan-out stays local. Resources + `project_id` come from the
-`trundlr:` block in `results/rayleigh.yaml` (defaults from `~/.config/rayleigh/config.toml`);
-a name-form `project_id` is resolved to a numeric id and cached on first `queue`. Per
-experiment, `budget_hours:` sets its trundlr scheduling window.
+rides trundlr while the cell fan-out stays local.
+
+Each experiment carries its own scheduling knobs, set during `init`:
+
+- **`resource: cpu | gpu`** — which trundlr resource runs *this* experiment's `conduct_exp`
+  (default `cpu`; most sims here are CPU-bound). `process_outputs` is always CPU.
+- **`workers`** — how many cells run in parallel, sized to the target machine so it doesn't
+  overload cores/RAM (`≤ cores`, and `workers × per-run RAM ≤ usable RAM`).
+- **`budget_hours`** — the trundlr scheduling window.
+
+The `trundlr:` block in `results/rayleigh.yaml` holds the resource ids (`{gpu, cpu}`) and
+`project_id` (defaults from `~/.config/rayleigh/config.toml`); a name-form `project_id` is
+resolved to a numeric id and cached on first `queue`.
 
 ## Status
 

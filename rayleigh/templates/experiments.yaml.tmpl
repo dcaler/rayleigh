@@ -37,6 +37,9 @@ experiments:
   - id: E1
     title: "(short human label)"
     mode: confirmatory             # confirmatory | exploratory  (drives honest reporting)
+    resource: cpu                  # cpu | gpu — which trundlr resource `rayleigh queue` runs this
+                                   #   experiment's conduct_exp on (default cpu; set gpu only if this
+                                   #   experiment's code path needs one). Ignored by local runs.
     question: "(the specific question this experiment answers)"
 
     design:
@@ -46,8 +49,11 @@ experiments:
         param_b: [0.0, 0.5, 1.0]
       seeds: 16                    # Monte Carlo replications per cell
 
+    workers: 8                     # parallel cells for THIS experiment — sized in `init` to the
+                                   #   machine that runs it: <= cores, AND workers x per-run RAM
+                                   #   <= usable RAM (esp. for CPU experiments; a swapping box is
+                                   #   slower than a smaller pool). GPU: size to VRAM (often 1-few).
     # seeds: 64                    # optional: override the design's seeds for this experiment
-    # workers: 32                  # optional: override run_adapter.workers for this experiment
     # budget_hours: 2              # optional: trundlr scheduling window for `rayleigh queue`
 
     metric:                        # PREREGISTERED — fixed before any data exists

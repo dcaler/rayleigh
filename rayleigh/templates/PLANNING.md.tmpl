@@ -57,7 +57,12 @@ theoretically motivated. Write each answer into an `experiments:` entry as you g
 2. **Design** — what varies and how. Pick the shape: `sweep` (cartesian axes),
    `conditions` (named arms), `oat` (one-at-a-time sensitivity), `ablation` (features off).
    Set the axes and the number of `seeds` (Monte Carlo reps). Sanity-check the cell count
-   (product of axis lengths × seeds) against compute budget.
+   (product of axis lengths × seeds) against compute budget. Then set **`workers`** — how many
+   cells `conduct_exp` runs in parallel — sized to the machine that will run this experiment:
+   inspect it (cores via `nproc`, memory via `free -g`), estimate one run's RAM footprint from
+   `code/` (or a single pilot cell), and choose `workers ≤ cores` **and** `workers × per-run RAM
+   ≤ usable RAM` — a box that swaps is slower than a smaller pool. This matters most for CPU
+   experiments; for a GPU experiment, bound `workers` by VRAM instead (often 1–few concurrent).
 3. **Metric** — the measured quantity and how cells/seeds `reduce` to it. Fix this now;
    choosing the metric *after* seeing data is how findings become artifacts.
 4. **Expected direction** — the predicted result and the theory/literature it rests on.
@@ -67,6 +72,10 @@ theoretically motivated. Write each answer into an `experiments:` entry as you g
    `process_outputs` executes — so specify axes, facets, and the caption's takeaway.
 6. **Mode** — `confirmatory` (predicted in advance; the prereg above is binding) or
    `exploratory` (poking at the data; findings will be labeled as such, not overclaimed).
+7. **Resource** — `resource: cpu` (default) or `gpu`, per experiment: does *this*
+   experiment's `code/` path need a GPU? Most sims here are CPU-bound. `rayleigh queue`
+   sends each experiment's `conduct_exp` to the matching trundlr resource; local runs and
+   `process_outputs` ignore it. (Set it now so the queued chain is scheduled correctly.)
 
 ## 3. Honesty, not gates
 
