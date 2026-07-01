@@ -18,11 +18,17 @@ code:
   path: {{CODE_PATH}}
   package: {{PACKAGE}}
   run_adapter:                     # HOW conduct_exp turns ONE cell into ONE run.
-                                   # Discovered during init by reading code/ (deferred verb).
+                                   # Discovered during init by reading code/.
     kind: import                   # import | subprocess
-    entrypoint: "{{PACKAGE}}.cli:run_one"   # import "module.path:callable"
-    # command: "python -m {{PACKAGE}}.cli run --config {config} --output {out}"  # subprocess form
-    output_template: "data/{experiment}/cell_{cellkey}_seed{seed}.parquet"
+    # import CONTRACT: callable(params: dict, seed: int, output: str) -> None
+    #   runs one cell and writes its result to `output`. If code/'s real entrypoint has a
+    #   different signature, author a thin shim (in code/ or results/) that adapts it, and
+    #   point `entrypoint` at the shim.
+    entrypoint: "{{PACKAGE}}_adapter:run_one"   # "module:callable"
+    # subprocess CONTRACT: rayleigh writes {**params, "seed": seed} to a per-cell JSON config,
+    #   then runs `command`, substituting {config}, {out}, {seed}, and any {param}:
+    # command: "python -m {{PACKAGE}}.cli run --config {config} --output {out}"
+    output_template: "data/{experiment}/{cellkey}_seed{seed}.parquet"  # {experiment} {cellkey} {seed} {param}
     workers: 8                     # default parallelism (per-experiment override allowed)
 
 # ── PER-EXPERIMENT (a list; add one block per experiment) ────────────────────────────

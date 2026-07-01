@@ -27,9 +27,15 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--no-launch", action="store_true",
                       help="scaffold only; print the playbook path instead of launching claude")
 
-    conduct = sub.add_parser("conduct_exp", help="run one experiment's cells against code/  [not yet built]")
+    conduct = sub.add_parser("conduct_exp", help="run one experiment's cells against code/")
     _common(conduct)
     conduct.add_argument("experiment", help="experiment id, e.g. E1")
+    conduct.add_argument("--dry-run", action="store_true",
+                         help="list the cells and what would run; execute nothing")
+    conduct.add_argument("--workers", type=int, default=0,
+                         help="parallel workers (default: experiment/run_adapter setting)")
+    conduct.add_argument("--limit", type=int, default=0,
+                         help="run at most N not-yet-done cells this pass (smoke testing)")
 
     process = sub.add_parser("process_outputs",
                              help="reduce data -> preregistered outputs -> the .docx write-up  [not yet built]")

@@ -15,7 +15,7 @@ package under `code/`); rayleigh helps you *design preregistered experiments* ag
 rayleigh init             ▸ scaffold results/, open/roll a research cycle, and run the
                             interactive design session → designdocs/experiments.yaml
 rayleigh conduct_exp <E>  ▸ expand an experiment's design into cells and run them against
-                            code/ (restartable, provenance)                 [Session 2]
+                            code/ (restartable, provenance)
 rayleigh process_outputs  ▸ reduce data → the preregistered outputs → findings →
                             the datestamped .docx write-up                  [Session 3]
 ```
@@ -87,8 +87,25 @@ results/
 Then the interactive session reads `designdocs/PLANNING.md`, inspects `code/` to establish
 the run-adapter, and preregisters this cycle's experiments with you into `experiments.yaml`.
 
+## Conduct experiments
+
+Once `experiments.yaml` has experiments (from `init`):
+
+```bash
+rayleigh conduct_exp E1 --dry-run   # list the cells; run nothing
+rayleigh conduct_exp E1             # expand the design → cells, run each against code/
+rayleigh conduct_exp E1 --workers 32 --limit 8   # parallelism + smoke-test a few cells
+```
+
+`conduct_exp` expands an experiment's `design` (a `sweep` over axes, or named `conditions`)
+into cells — one parameter combo × one seed — and invokes `code/` per the
+`code.run_adapter` (either an in-process `import` entrypoint or a `subprocess` command).
+It's **restartable** (skips cells whose output already exists) and writes a provenance
+sidecar (`*.prov.json`: code git SHA, params, seed, rayleigh version) beside each output,
+plus a `data/<E>/_status.json` summary.
+
 ## Status
 
-`init` is implemented (scaffold + cycle management + the interactive design session).
-`conduct_exp` and `process_outputs` are stubbed with their contract pinned — the
-`experiments.yaml` schema they consume is authored by `init` and settles first.
+`init` and `conduct_exp` are implemented. `process_outputs` is stubbed with its contract
+pinned — it reduces the data `conduct_exp` produced into each experiment's preregistered
+outputs and the datestamped `.docx` write-up.
