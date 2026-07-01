@@ -1,0 +1,64 @@
+# experiments.yaml — the executable experiment spec (MACHINERY, git-ignored).
+# Authored during `rayleigh init` (the interactive design/prereg session, following
+# designdocs/PLANNING.md). Consumed by `conduct_exp` (runs the cells) and
+# `process_outputs` (renders the preregistered outputs + findings).
+#
+# The atomic unit is the EXPERIMENT: one question + one design + one metric + planned
+# outputs = one finding. A "sweep" is just the most common shape of an experiment's
+# `design`. Below the experiment, the design expands to CELLS (one param combo x one
+# seed) — the parallel work items conduct_exp dispatches to code/.
+#
+# ── FILE-LEVEL (shared by every experiment) ─────────────────────────────────────────
+cycle: "{{CYCLE}}"
+project: {{PROJECT}}
+brief: >
+  (the overarching research question for this cycle — filled from the init brief)
+
+code:
+  path: {{CODE_PATH}}
+  package: {{PACKAGE}}
+  run_adapter:                     # HOW conduct_exp turns ONE cell into ONE run.
+                                   # Discovered during init by reading code/ (deferred verb).
+    kind: import                   # import | subprocess
+    entrypoint: "{{PACKAGE}}.cli:run_one"   # import "module.path:callable"
+    # command: "python -m {{PACKAGE}}.cli run --config {config} --output {out}"  # subprocess form
+    output_template: "data/{experiment}/cell_{cellkey}_seed{seed}.parquet"
+    workers: 8                     # default parallelism (per-experiment override allowed)
+
+# ── PER-EXPERIMENT (a list; add one block per experiment) ────────────────────────────
+experiments:
+  # ---- EXAMPLE experiment — replace with the real ones during the init session ----
+  - id: E1
+    title: "(short human label)"
+    mode: confirmatory             # confirmatory | exploratory  (drives honest reporting)
+    question: "(the specific question this experiment answers)"
+
+    design:
+      kind: sweep                  # sweep | conditions | oat | ablation
+      axes:                        # each axis is a named list; cells = the cartesian product
+        param_a: [lo, hi]
+        param_b: [0.0, 0.5, 1.0]
+      seeds: 16                    # Monte Carlo replications per cell
+
+    # seeds: 64                    # optional: override the design's seeds for this experiment
+    # workers: 32                  # optional: override run_adapter.workers for this experiment
+
+    metric:                        # PREREGISTERED — fixed before any data exists
+      name: (the measured quantity)
+      reduce: "(how cells/seeds collapse to the quantity, e.g. mean over seeds)"
+
+    expected_direction: "(the predicted result and its theoretical basis)"
+
+    outputs:                       # PREREGISTERED — planned here, rendered by process_outputs.
+                                   # A list: a finding may be a figure, a table, a stat, ...
+      - kind: figure
+        type: line                 # line | bar | heatmap | scatter | ...
+        x: param_b
+        y: (metric)
+        facet: param_a
+        caption: "(what the reader should take away)"
+      # - kind: table
+      #   rows: param_a
+      #   cols: param_b
+      #   cell: (metric)
+      #   caption: "..."

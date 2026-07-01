@@ -1,0 +1,84 @@
+# {{PROJECT}} — rayleigh design playbook (cycle {{CYCLE}})
+
+*Read by the interactive `rayleigh init` session. You (Claude) and the user (Cale)
+co-design this cycle's experiments here. Heavy human involvement is the point — this is
+where preregistration happens, and it is a conversation, not a form to autofill.*
+
+> Research brief (from init): {{BRIEF}}
+> Codebase under test: `{{CODE_PATH}}` (package `{{PACKAGE}}`)
+
+---
+
+## Your job
+
+Turn the research brief into a set of **preregistered experiments**, written to
+`designdocs/experiments.yaml` (executable) and mirrored in `designdocs/EXPERIMENTS.md`
+(human-facing). The atomic unit is the **experiment**: one question + one design + one
+metric + planned outputs = one finding. Design each *before* any data exists — that is
+what makes a later result honest.
+
+Do **not** run anything, and do **not** modify `{{CODE_PATH}}`. rayleigh designs; `code/`
+runs. Your output is the spec; `conduct_exp` executes it later.
+
+## 1. Absorb the context (read first)
+
+- `designdocs/EXPERIMENTS.md` and `experiments.yaml` — the skeletons you'll fill.
+- The brief above, and the project's existing materials one level up: `paper/` (the
+  argument these experiments must support), `litReview/` (what's known / expected
+  directions), and any root notes.
+- `{{CODE_PATH}}/` — the codebase. Read its README / CLAUDE.md, its CLI, and its config
+  schema. You are looking for three things (they become the `run_adapter`):
+  1. the **single-run entrypoint** — the callable or CLI command that takes one config
+     and produces one output (e.g. `Simulation(cfg).run()` or `python -m pkg.cli run …`);
+  2. the **config surface** — which parameters an experiment can vary (the axes);
+  3. the **output format** — what one run writes, and the metrics recoverable from it.
+
+Record 1–3 in `experiments.yaml` under `code.run_adapter` and summarize them in the
+"codebase under test" section of `EXPERIMENTS.md`. If `code/` exposes no clean single-run
+entrypoint, surface that to the user now — it's a gap the code side should close.
+
+## 2. The preregistration ritual (per experiment)
+
+For each experiment, walk the user through these in order. Push back where the design is
+underpowered, the metric won't answer the question, or the expected direction isn't
+theoretically motivated. Write each answer into an `experiments:` entry as you go.
+
+1. **Question** — the one specific thing this experiment decides. If it needs two figures
+   to answer, it's probably two experiments.
+2. **Design** — what varies and how. Pick the shape: `sweep` (cartesian axes),
+   `conditions` (named arms), `oat` (one-at-a-time sensitivity), `ablation` (features off).
+   Set the axes and the number of `seeds` (Monte Carlo reps). Sanity-check the cell count
+   (product of axis lengths × seeds) against compute budget.
+3. **Metric** — the measured quantity and how cells/seeds `reduce` to it. Fix this now;
+   choosing the metric *after* seeing data is how findings become artifacts.
+4. **Expected direction** — the predicted result and the theory/literature it rests on.
+   A confirmatory experiment must have one.
+5. **Planned outputs** — the artifact(s) that would show the finding: a `figure`
+   (line/bar/heatmap/…), a `table`, a summary stat. This list *is* the plan
+   `process_outputs` executes — so specify axes, facets, and the caption's takeaway.
+6. **Mode** — `confirmatory` (predicted in advance; the prereg above is binding) or
+   `exploratory` (poking at the data; findings will be labeled as such, not overclaimed).
+
+## 3. Honesty, not gates
+
+rayleigh never refuses to run an experiment and never auto-judges a result. The discipline
+lives *here*, in the design conversation, and in reporting: `process_outputs` states
+support/refute plainly and labels exploratory findings honestly. So it is fine — expected,
+even — to add exploratory experiments. Just mark them `mode: exploratory` and don't let an
+exploratory result masquerade as a prediction confirmed.
+
+## 4. Iteration across cycles
+
+This cycle is stamped `{{CYCLE}}`. When the research direction genuinely changes, the user
+runs `rayleigh init --new-cycle` to open a new datestamp and archive this one — you don't
+manage cycle boundaries from inside the session. Within this cycle, add and refine
+experiments freely.
+
+## 5. When you're done
+
+- `experiments.yaml` has one well-formed entry per experiment (valid YAML; every
+  confirmatory experiment has a metric, expected_direction, and outputs).
+- `EXPERIMENTS.md` mirrors them in prose, with the research question and the codebase notes.
+- Add a row per experiment to `designdocs/PROGRESS.md` (⬜ designed).
+- Tell the user the next step: `rayleigh conduct_exp <id>` to run an experiment's cells,
+  then `rayleigh process_outputs` to render the write-up.

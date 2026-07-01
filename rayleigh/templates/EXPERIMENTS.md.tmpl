@@ -1,0 +1,45 @@
+# {{PROJECT}} — Experiments (cycle {{CYCLE}})
+
+*Status: DRAFT — authored during `rayleigh init` (human + Claude) · created {{DATE}}*
+*Human-facing companion to the executable spec [`experiments.yaml`](./experiments.yaml).
+The write-up of results is delivered separately as the datestamped `.docx` in `results/`.*
+
+> Research brief (from `rayleigh init`): {{BRIEF}}
+
+<!--
+  DESIGN SESSION: this is a skeleton. Fill it IN COLLABORATION WITH THE USER while
+  authoring experiments.yaml (see PLANNING.md). Every experiment here maps 1:1 to an
+  entry under experiments.yaml `experiments:`. Keep the prereg honest — question,
+  metric, and expected direction are fixed BEFORE data exists. Delete these comments as you go.
+-->
+
+## Research question
+
+<!-- The overarching question this cycle answers, in 2–4 sentences. What would change
+     our mind about it, and what "done" looks like for this cycle. -->
+
+## The codebase under test
+
+<!-- What code/ provides: the single-run entrypoint conduct_exp will call (the run_adapter),
+     the config knobs experiments vary, and the output format each run produces. This is
+     what the init session discovers by reading code/. -->
+
+## Experiments
+
+<!-- One subsection per experiment, mirroring experiments.yaml. For each: the question,
+     the design (what varies + how many seeds), the metric, the PREREGISTERED expected
+     direction, the planned outputs (figures/tables), and mode (confirmatory/exploratory). -->
+
+### E1 — (title)
+
+- **Question:** …
+- **Mode:** confirmatory | exploratory
+- **Design:** … (axes / conditions, seeds)
+- **Metric:** …
+- **Expected direction (prereg):** …
+- **Planned outputs:** …
+
+## Notes & open decisions
+
+<!-- Anything deferred, and why. Dependencies between experiments (E2 zooms into E1's
+     interesting region), budget/compute caveats, validity boundaries of code/. -->

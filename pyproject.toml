@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rayleigh"
+version = "0.1.0"
+description = "Experiment designer & runner in the ra* family — designs, conducts, and writes up experiments against a codebase."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["PyYAML>=6"]
+
+[project.scripts]
+rayleigh = "rayleigh.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["rayleigh*"]
+
+[tool.setuptools.package-data]
+rayleigh = ["templates/*.tmpl"]

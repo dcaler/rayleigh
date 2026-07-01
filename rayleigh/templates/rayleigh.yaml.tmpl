@@ -1,0 +1,19 @@
+# rayleigh project config — MACHINERY, not a shipped deliverable (git-ignored).
+# Written by `rayleigh init`. Read by every rayleigh verb.
+# Personal/account details never live here — those stay in ~/.config/rayleigh/config.toml.
+
+project: {{PROJECT}}
+cycle: "{{CYCLE}}"             # {YYMMDD} datestamp of the current research direction
+brief: {{BRIEF_YAML}}         # long-form research brief (from init); read by the design session
+
+code:
+  path: {{CODE_PATH}}         # the codebase under test (usually ../code, a raster-built package)
+  package: {{PACKAGE}}        # import name of the package under code/
+
+author:
+  name: {{AUTHOR}}            # stamped into the .docx write-up
+  tool_initials: {{TOOL_INITIALS}}   # trailing suffix on tool-authored files (revision chain)
+  user_initials: {{USER_INITIALS}}   # the human reviewer's initials
+
+# The executable experiment spec is designdocs/experiments.yaml (also git-ignored),
+# authored during `rayleigh init` and consumed by `conduct_exp` and `process_outputs`.

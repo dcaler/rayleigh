@@ -1,0 +1,21 @@
+# {{PROJECT}} — Experiment Progress (cycle {{CYCLE}})
+
+*Human-facing mirror of experiment + cell state. Source of truth: [`experiments.yaml`](./experiments.yaml).
+Status legend: ⬜ designed · 🟦 running · ✅ conducted · 📊 outputs done · ❌ failed*
+
+Last updated: {{DATE}} (scaffolded by `rayleigh init` — experiments not yet authored)
+
+Each **experiment** is designed in `init`, its cells conducted by `conduct_exp`, and its
+preregistered outputs rendered by `process_outputs`. One experiment = one finding.
+
+## Experiments
+
+| Exp | Title | Mode | Cells | Conducted | Outputs |
+|---|---|---|---|---|---|
+| — | _(author during `rayleigh init`)_ | — | — | ⬜ | ⬜ |
+
+## How this file is maintained
+
+`init` adds a row per experiment (⬜ designed). `conduct_exp <E>` flips it 🟦 while running,
+✅ when all cells have data (❌ on failure). `process_outputs` sets 📊 once the experiment's
+figures/tables and finding are rendered into the datestamped `.docx`.
