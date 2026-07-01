@@ -201,9 +201,9 @@ def _code_sha(code_dir: Path) -> str:
 
 
 # --------------------------------------------------------------------- PROGRESS.md
-def _update_progress(results: Path, eid: str, total: int, ok: bool) -> None:
-    """Best-effort: set the experiment's row status in PROGRESS.md. Skips quietly if the
-    table structure doesn't match (it's an authored doc — never corrupt it)."""
+def _update_progress(results: Path, eid: str, mark: str) -> None:
+    """Best-effort: set the experiment's row status in PROGRESS.md to `mark` (✅/🟦/❌).
+    Skips quietly if the table structure doesn't match (it's an authored doc — never corrupt it)."""
     p = results / "designdocs" / "PROGRESS.md"
     if not p.is_file():
         return
@@ -217,7 +217,6 @@ def _update_progress(results: Path, eid: str, total: int, ok: bool) -> None:
         cond_col = cols.index("Conducted")
     except ValueError:
         return
-    mark = "✅" if ok else "❌"
     for i in range(header_idx + 2, len(lines)):        # skip header + separator
         row = lines[i]
         if not row.lstrip().startswith("|"):
@@ -322,6 +321,13 @@ def run_conduct_exp(args) -> int:
     status_path.parent.mkdir(parents=True, exist_ok=True)
     status_path.write_text(json.dumps(status, indent=2))
 
-    all_done = (done_already + ran) == len(cells) and not failed
-    _update_progress(results, eid, len(cells), ok=all_done)
+    # ❌ only on a real failure; ✅ when every cell has data; 🟦 for a clean partial pass
+    # (e.g. --limit) that isn't complete yet — a partial success must not read as failed.
+    if failed:
+        mark = "❌"
+    elif (done_already + ran) == len(cells):
+        mark = "✅"
+    else:
+        mark = "🟦"
+    _update_progress(results, eid, mark)
     return 0 if not failed else 1
