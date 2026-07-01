@@ -67,8 +67,11 @@ tool_initials = "ra"         # trailing suffix on tool-authored files (revision 
 user_initials = "DCR"        # the human reviewer's initials (the annotated-file suffix)
 
 [models]
-# reserved for later verbs; init uses an interactive `claude` session, not these.
-design = "claude"            # interactive design/prereg session
+# The `rayleigh init` design session is the highest-reasoning, human-in-the-loop step
+# (synthesize priors -> a preregistered design + a run-adapter shim), so it launches
+# `claude` on the strong model. `opus` = latest Opus (Opus 4.8); use `fable` for the very
+# hardest, or `sonnet` for a lighter/cheaper session. Passed as `claude --model <this>`.
+design = "opus"
 
 [trundlr]
 # `rayleigh queue` offloads the coarse experiment chain here (each conduct_exp node still
@@ -90,7 +93,7 @@ class Config:
     author_name: str = "rayleigh"
     tool_initials: str = "ra"
     user_initials: str = "DCR"
-    design_model: str = "claude"
+    design_model: str = "opus"
     trundlr_api: str = "http://100.87.86.57:8251"
     gpu_resource: int = 2
     cpu_resource: int = 3

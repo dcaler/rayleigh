@@ -43,7 +43,9 @@ design session).
 First run writes `~/.config/rayleigh/config.toml` (the PII boundary): the author identity
 stamped into the `.docx` write-up and the initials used by the document-revision naming
 chain (`ra` = tool, e.g. `DCR` = human reviewer). Personal details live only here and never
-enter a project.
+enter a project. It also sets `[models] design` — the model `init` launches the design
+session on (default `opus`, since preregistering experiments + authoring the run-adapter is
+the pipeline's highest-reasoning step; use `fable` for the hardest, `sonnet` for lighter).
 
 ## Core ideas
 

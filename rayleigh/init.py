@@ -163,7 +163,7 @@ def render_priors_md(root: Path, priors, project: str, cycle: str) -> str:
     return "\n".join(L) + "\n"
 
 
-def launch_session(root: Path, no_launch: bool) -> int:
+def launch_session(root: Path, no_launch: bool, model: str = "") -> int:
     playbook = root / "results" / "designdocs" / "PLANNING.md"
 
     def manual(reason: str) -> int:
@@ -177,10 +177,17 @@ def launch_session(root: Path, no_launch: bool) -> int:
         return manual("Open a Claude session in this folder and follow:")
     if shutil.which("claude") is None:
         return manual("`claude` is not on PATH — open a session yourself and follow:")
-    print(f"[rayleigh init] launching an interactive Claude design session in {root} …")
+    # The design session is the strong-reasoning step; launch it on the configured model
+    # (default Opus) rather than inheriting the CLI default. ("claude" is not a valid
+    # --model alias — an older config default — so treat it as "use the CLI default".)
+    use_model = model if model and model.lower() not in ("claude", "default") else ""
+    cmd = ["claude"] + (["--model", use_model] if use_model else []) + [DESIGN_PROMPT]
+    model = use_model
+    print(f"[rayleigh init] launching an interactive Claude design session "
+          f"({model or 'default'}) in {root} …")
     # Run from the project root so the session sees results/, code/, and the sibling
     # paper/ and litReview/. Inherits this terminal's stdio (fully interactive).
-    return subprocess.run(["claude", DESIGN_PROMPT], cwd=str(root)).returncode
+    return subprocess.run(cmd, cwd=str(root)).returncode
 
 
 def run_init(args) -> int:
@@ -268,4 +275,4 @@ def run_init(args) -> int:
     print()
     print(f"  Scaffolded results/ for {name} (cycle {cycle}) in {results}")
     # results/ is a working folder, not a repo — no git init here (unlike raster).
-    return launch_session(root, getattr(args, "no_launch", False))
+    return launch_session(root, getattr(args, "no_launch", False), model=cfg.design_model)
