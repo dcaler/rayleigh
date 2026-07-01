@@ -20,16 +20,32 @@ code:
   run_adapter:                     # HOW conduct_exp turns ONE cell into ONE run.
                                    # Discovered during init by reading code/.
     kind: import                   # import | subprocess
-    # import CONTRACT: callable(params: dict, seed: int, output: str) -> None
-    #   runs one cell and writes its result to `output`. If code/'s real entrypoint has a
-    #   different signature, author a thin shim (in code/ or results/) that adapts it, and
-    #   point `entrypoint` at the shim.
+    # import CONTRACT — one file per cell:      callable(params: dict, seed: int, output: str)
+    #                   several files per cell:  callable(params: dict, seed: int, outputs: dict)
+    #                                            (outputs = {name: path}; see `outputs:` below)
+    #   Runs one cell and writes each artifact. If code/'s real entrypoint has a different
+    #   signature, author a thin shim (in code/ or results/) that adapts it, and point
+    #   `entrypoint` at the shim.
     entrypoint: "{{PACKAGE}}_adapter:run_one"   # "module:callable"
     # subprocess CONTRACT: rayleigh writes {**params, "seed": seed} to a per-cell JSON config,
-    #   then runs `command`, substituting {config}, {out}, {seed}, and any {param}:
+    #   then runs `command`, substituting {config}, {seed}, any {param}, {out} (the/first
+    #   artifact), and {out_<name>} per named output:
     # command: "python -m {{PACKAGE}}.cli run --config {config} --output {out}"
-    output_template: "data/{experiment}/{cellkey}_seed{seed}.parquet"  # {experiment} {cellkey} {seed} {param}
+
+    # ONE artifact per cell — the common case:
+    output_template: "data/{experiment}/{cellkey}_seed{seed}.parquet"  # placeholders: {experiment} {cellkey} {seed} {param}
+    # …OR SEVERAL artifacts per cell (e.g. a model that writes a macro + trade file). A cell
+    # counts as done only when ALL its outputs exist:
+    # outputs:
+    #   macro: "data/{experiment}/{cellkey}_seed{seed}_macro.parquet"
+    #   trade: "data/{experiment}/{cellkey}_seed{seed}_trade.parquet"
+
     workers: 8                     # default parallelism (per-experiment override allowed)
+
+  # output_adapter:                # OPTIONAL — how process_outputs reads a cell's metrics.
+  #   load: "{{PACKAGE}}_adapter:load_metrics"   # callable(outputs: dict[name, path]) -> {metric: value}
+  #   Default (no adapter): JSON dict of scalars, or numeric column means of parquet/csv;
+  #   with several artifacts, metric keys are prefixed by name (e.g. `macro.gdp`, `trade.nx`).
 
 # ── PER-EXPERIMENT (a list; add one block per experiment) ────────────────────────────
 experiments:

@@ -7,9 +7,11 @@ cell's output into a tidy table, aggregate over seeds, render the outputs planne
 observed summary next to the preregistered `expected_direction`, honoring
 `mode: confirmatory | exploratory`. No auto-verdict gate; honesty lives in the wording.
 
-Reading a cell's output uses a loader:
-  - default: JSON dict of scalars, or a parquet/csv (numeric column means);
-  - override: `code.output_adapter.load: "module:callable"` — callable(output_path) -> dict.
+Reading a cell's output(s) uses a loader (a cell may write several artifacts):
+  - default: each artifact as a JSON dict of scalars, or parquet/csv numeric column means,
+    merged (keys prefixed by artifact name when there are several);
+  - override: `code.output_adapter.load: "module:callable"` —
+    callable(outputs: dict[name, path]) -> {metric: value}.
 
 Deliverable: `results/{cycle}_{project}_results_{ra}.docx` (python-docx; degrades to a
 Markdown RESULTS.md if python-docx is unavailable), plus figures in `results/figures/`.
@@ -25,14 +27,11 @@ from pathlib import Path
 import yaml
 
 from rayleigh import __version__
-from rayleigh.conduct_exp import expand_cells, _resolve_output, _cellkey  # reuse cell logic
+from rayleigh.conduct_exp import expand_cells, resolve_cell_outputs  # reuse cell logic
 
 
 def log(msg: str) -> None:
     print(f"[rayleigh process_outputs] {msg}", flush=True)
-
-
-DEFAULT_TEMPLATE = "data/{experiment}/{cellkey}_seed{seed}.parquet"
 
 
 # --------------------------------------------------------------------- loading cells
@@ -47,21 +46,31 @@ def _flatten(d: dict, prefix: str = "") -> dict:
     return out
 
 
-def _default_load(path: str) -> dict:
-    """Load one cell's scalar metrics with no project-specific adapter."""
-    p = Path(path)
-    if p.suffix == ".json":
-        d = json.loads(p.read_text())
+def _load_one(path: Path) -> dict:
+    """Scalar metrics from one artifact file (JSON dict, or numeric column means of parquet/csv)."""
+    if path.suffix == ".json":
+        d = json.loads(path.read_text())
         if not isinstance(d, dict):
             return {}
         return {k: v for k, v in _flatten(d).items()
                 if isinstance(v, (int, float)) and not isinstance(v, bool)}
-    if p.suffix in (".parquet", ".pq", ".csv"):
+    if path.suffix in (".parquet", ".pq", ".csv"):
         import pandas as pd
-        df = pd.read_csv(p) if p.suffix == ".csv" else pd.read_parquet(p)
+        df = pd.read_csv(path) if path.suffix == ".csv" else pd.read_parquet(path)
         num = df.select_dtypes("number")
         return {c: float(num[c].mean()) for c in num.columns}
-    raise ValueError(f"no default loader for '{p.suffix}' — set code.output_adapter.load")
+    raise ValueError(f"no default loader for '{path.suffix}' — set code.output_adapter.load")
+
+
+def _default_load(outputs: dict) -> dict:
+    """Merge one cell's scalar metrics across its artifact(s) (outputs = {name: path}).
+    With several artifacts, keys are prefixed by name (`macro.gdp`) so they don't collide."""
+    multi = len(outputs) > 1
+    merged = {}
+    for name, path in outputs.items():
+        for k, v in _load_one(Path(path)).items():
+            merged[f"{name}.{k}" if multi else k] = v
+    return merged
 
 
 def _get_loader(spec: dict, code_dir: Path):
@@ -90,17 +99,17 @@ def build_table(exp: dict, adapter: dict, results: Path, loader):
     """Tidy table: one row per cell with output = {**params, seed, **metrics}."""
     import pandas as pd
     eid = str(exp["id"])
-    template = adapter.get("output_template") or DEFAULT_TEMPLATE
     rows, missing = [], 0
     for cell in expand_cells(exp, adapter):
-        out = _resolve_output(template, results, eid, cell)
-        if not out.exists():
+        outputs = resolve_cell_outputs(adapter, results, eid, cell)
+        if not all(p.exists() for p in outputs.values()):
             missing += 1
             continue
         try:
-            metrics = loader(str(out))
+            metrics = loader({n: str(p) for n, p in outputs.items()})
         except Exception as e:                       # noqa: BLE001
-            log(f"  {eid}: could not load {out.name}: {type(e).__name__}: {e}")
+            log(f"  {eid}: could not load cell {cell['params']} seed={cell['seed']}: "
+                f"{type(e).__name__}: {e}")
             metrics = {}
         rows.append({**cell["params"], "seed": cell["seed"], **metrics})
     df = pd.DataFrame(rows)

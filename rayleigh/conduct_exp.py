@@ -32,6 +32,7 @@ import yaml
 from rayleigh import __version__
 
 DEFAULT_WORKERS = 8
+DEFAULT_TEMPLATE = "data/{experiment}/{cellkey}_seed{seed}.parquet"
 
 
 def log(msg: str) -> None:
@@ -98,23 +99,36 @@ def expand_cells(exp: dict, adapter: dict) -> list[dict]:
     return [{"params": p, "seed": s} for p in combos for s in range(n_seeds)]
 
 
-def _resolve_output(template: str, results: Path, eid: str, cell: dict) -> Path:
+def resolve_cell_outputs(adapter: dict, results: Path, eid: str, cell: dict) -> dict:
+    """Resolve a cell's output artifact path(s) → {name: Path}.
+
+    Two forms in run_adapter (a run may write several files, e.g. macro + trade):
+      - single: `output_template: "…"`            -> {"output": Path}
+      - multi:  `outputs: {macro: "…", trade: "…"}` -> {"macro": Path, "trade": Path}
+    """
+    outs = adapter.get("outputs")
+    templates = dict(outs) if outs else {"output": adapter.get("output_template") or DEFAULT_TEMPLATE}
     key = _cellkey(cell["params"])
-    try:
-        rel = template.format(experiment=eid, cellkey=key, seed=cell["seed"], **cell["params"])
-    except KeyError as e:
-        raise KeyError(
-            f"output_template references {e} which is not a param/known field. "
-            f"Available: experiment, cellkey, seed, {', '.join(cell['params']) or '(no params)'}")
-    return (results / rel).resolve()
+    resolved = {}
+    for name, tmpl in templates.items():
+        try:
+            rel = str(tmpl).format(experiment=eid, cellkey=key, seed=cell["seed"], **cell["params"])
+        except KeyError as e:
+            raise KeyError(
+                f"output template for '{name}' references {e}, not a param/known field. "
+                f"Available: experiment, cellkey, seed, {', '.join(cell['params']) or '(no params)'}")
+        resolved[name] = (results / rel).resolve()
+    return resolved
 
 
 # --------------------------------------------------------------------- execution
 def _execute_cell(job: dict) -> dict:
     """Run one cell. Top-level so it is picklable for ProcessPoolExecutor.
-    Returns {output, status, error}."""
-    out = Path(job["output"])
-    out.parent.mkdir(parents=True, exist_ok=True)
+    A cell may write several named artifacts (job["outputs"] = {name: path})."""
+    outs = {n: Path(p) for n, p in job["outputs"].items()}
+    primary = next(iter(outs.values()))
+    for p in outs.values():
+        p.parent.mkdir(parents=True, exist_ok=True)
     try:
         if job["kind"] == "import":
             code_dir = job["code_dir"]
@@ -125,13 +139,18 @@ def _execute_cell(job: dict) -> dict:
                 raise ValueError(f"entrypoint '{job['entrypoint']}' must be 'module:callable'")
             import importlib
             fn = getattr(importlib.import_module(mod_name), fn_name)
-            fn(params=job["params"], seed=job["seed"], output=str(out))
+            if job["multi"]:                     # outputs: mapping -> callable(params, seed, outputs)
+                fn(params=job["params"], seed=job["seed"],
+                   outputs={n: str(p) for n, p in outs.items()})
+            else:                                # single output_template -> callable(params, seed, output)
+                fn(params=job["params"], seed=job["seed"], output=str(primary))
         elif job["kind"] == "subprocess":
             cfg_path = Path(job["config_path"])
             cfg_path.parent.mkdir(parents=True, exist_ok=True)
             cfg_path.write_text(json.dumps({**job["params"], "seed": job["seed"]}, indent=2))
-            cmd = job["command"].format(config=str(cfg_path), out=str(out),
-                                        seed=job["seed"], **job["params"])
+            subs = {"config": str(cfg_path), "out": str(primary), "seed": job["seed"],
+                    **job["params"], **{f"out_{n}": str(p) for n, p in outs.items()}}
+            cmd = job["command"].format(**subs)
             r = subprocess.run(cmd, shell=True, capture_output=True, text=True,
                                cwd=job.get("cwd"))
             if r.returncode != 0:
@@ -139,26 +158,28 @@ def _execute_cell(job: dict) -> dict:
         else:
             raise ValueError(f"unknown run_adapter kind '{job['kind']}' (use import|subprocess)")
 
-        if not out.exists():
-            raise RuntimeError(f"entrypoint returned but wrote no output at {out}")
-        _write_provenance(job, out)
-        return {"output": str(out), "status": "done", "error": None}
+        missing = [str(p) for p in outs.values() if not p.exists()]
+        if missing:
+            raise RuntimeError(f"entrypoint returned but wrote no output at {', '.join(missing)}")
+        _write_provenance(job, outs, primary)
+        return {"output": str(primary), "status": "done", "error": None}
     except Exception as e:                       # noqa: BLE001 — report, don't crash the pool
-        return {"output": str(out), "status": "failed", "error": f"{type(e).__name__}: {e}"}
+        return {"output": str(primary), "status": "failed", "error": f"{type(e).__name__}: {e}"}
 
 
-def _write_provenance(job: dict, out: Path) -> None:
+def _write_provenance(job: dict, outs: dict, primary: Path) -> None:
     prov = {
         "experiment": job["experiment"],
         "params": job["params"],
         "seed": job["seed"],
+        "outputs": {n: str(p) for n, p in outs.items()},
         "code_sha": job["code_sha"],
         "rayleigh_version": __version__,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
     prov["entrypoint" if job["kind"] == "import" else "command"] = (
         job.get("entrypoint") or job.get("command"))
-    out.with_suffix(out.suffix + ".prov.json").write_text(json.dumps(prov, indent=2))
+    primary.with_suffix(primary.suffix + ".prov.json").write_text(json.dumps(prov, indent=2))
 
 
 def _code_sha(code_dir: Path) -> str:
@@ -217,7 +238,7 @@ def run_conduct_exp(args) -> int:
     code = spec.get("code") or {}
     adapter = code.get("run_adapter") or {}
     kind = adapter.get("kind", "import")
-    template = adapter.get("output_template") or "data/{experiment}/{cellkey}_seed{seed}.parquet"
+    multi = bool(adapter.get("outputs"))     # mapping form -> callable(params, seed, outputs)
     workers = getattr(args, "workers", 0) or exp.get("workers") or adapter.get("workers") or DEFAULT_WORKERS
     code_dir = (results / (code.get("path") or "../code")).resolve()
 
@@ -227,23 +248,25 @@ def run_conduct_exp(args) -> int:
         log(str(e))
         return 1
 
-    # resolve outputs + partition into to-run vs already-done (restartable)
+    # resolve output artifact(s) per cell; a cell is done only when ALL its outputs exist
     try:
         for c in cells:
-            c["output"] = _resolve_output(template, results, eid, c)
+            c["outputs"] = resolve_cell_outputs(adapter, results, eid, c)
     except KeyError as e:
         log(str(e))
         return 1
-    todo = [c for c in cells if not c["output"].exists()]
+    todo = [c for c in cells if not all(p.exists() for p in c["outputs"].values())]
     done_already = len(cells) - len(todo)
 
+    nout = len(cells[0]["outputs"]) if cells else 1
     log(f"experiment {eid}: {len(cells)} cells ({done_already} already done, {len(todo)} to run) "
-        f"· kind={kind} · workers={workers}")
+        f"· kind={kind} · {nout} output(s)/cell · workers={workers}")
 
     if getattr(args, "dry_run", False):
         for c in cells[:20]:
-            state = "done" if c["output"].exists() else "TODO"
-            log(f"  [{state}] {c['params']} seed={c['seed']} -> {c['output'].name}")
+            state = "done" if all(p.exists() for p in c["outputs"].values()) else "TODO"
+            names = ", ".join(p.name for p in c["outputs"].values())
+            log(f"  [{state}] {c['params']} seed={c['seed']} -> {names}")
         if len(cells) > 20:
             log(f"  … and {len(cells) - 20} more")
         return 0
@@ -257,8 +280,9 @@ def run_conduct_exp(args) -> int:
 
     sha = _code_sha(code_dir)
     jobs = [{
-        "experiment": eid, "kind": kind, "params": c["params"], "seed": c["seed"],
-        "output": str(c["output"]), "code_dir": str(code_dir), "code_sha": sha,
+        "experiment": eid, "kind": kind, "multi": multi, "params": c["params"], "seed": c["seed"],
+        "outputs": {n: str(p) for n, p in c["outputs"].items()},
+        "code_dir": str(code_dir), "code_sha": sha,
         "cwd": str(root),   # subprocess commands run from the project root
         "entrypoint": adapter.get("entrypoint"), "command": adapter.get("command"),
         "config_path": str(results / "data" / eid / "_configs"

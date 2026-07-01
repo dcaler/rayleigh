@@ -52,13 +52,15 @@ Record 1–3 in `experiments.yaml` under `code.run_adapter` and summarize them i
 entrypoint, surface that to the user now — it's a gap the code side should close.
 
 `conduct_exp` calls the entrypoint under a fixed **calling contract** (see the comments in
-`experiments.yaml`): for `kind: import` it invokes `callable(params, seed, output)` and
-expects the result written to `output`; for `kind: subprocess` it writes a per-cell JSON
-config and substitutes `{config}`/`{out}`/`{seed}` into `command`. If code/'s real
-entrypoint doesn't match, author a **thin adapter shim** (a small module in code/ or
-results/, e.g. `{{PACKAGE}}_adapter.py` with `run_one(params, seed, output)` that builds the
-config and calls the model) and point `entrypoint` at it. Writing that shim with the user is
-part of this session.
+`experiments.yaml`): `kind: import` invokes `callable(params, seed, output)` — or, if a cell
+writes **several artifacts** (declared as `outputs: {name: template}`),
+`callable(params, seed, outputs)` with `outputs = {name: path}`; `kind: subprocess` writes a
+per-cell JSON config and substitutes `{config}`/`{seed}`/`{out}`/`{out_<name>}` into
+`command`. If code/'s real entrypoint doesn't match, author a **thin adapter shim** (a small
+module in code/ or results/, e.g. `{{PACKAGE}}_adapter.py`) and point `entrypoint` at it.
+If a run emits multiple files and the metric needs more than column means, also author an
+`output_adapter.load(outputs) -> {metric: value}`. Writing these with the user is part of
+this session.
 
 ## 2. The preregistration ritual (per experiment)
 
