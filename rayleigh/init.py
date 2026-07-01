@@ -23,10 +23,12 @@ from rayleigh.config import Config, load_config
 
 DESIGN_PROMPT = (
     "You are running the `rayleigh init` design session. Read results/designdocs/PLANNING.md "
-    "and follow it: absorb the research brief (results/rayleigh.yaml `brief:`) and the project's "
-    "materials (code/, and any paper/ and litReview/ one level up), read code/ to establish the "
-    "run_adapter, then co-design this cycle's preregistered experiments with me — writing "
-    "results/designdocs/experiments.yaml and EXPERIMENTS.md. Start by reading PLANNING.md."
+    "and follow it. First read results/designdocs/PRIORS.md — the index of what the earlier ra* "
+    "tools left (the raster-built code/, the rabbitHole litReview/, the raconteur paper/) — and "
+    "the artifacts it points to, plus the brief (results/rayleigh.yaml `brief:`). Synthesize them "
+    "into a PROPOSED starting experiment design, then refine it with me and write "
+    "results/designdocs/experiments.yaml (incl. the run_adapter from code/) and EXPERIMENTS.md. "
+    "Start by reading PLANNING.md and PRIORS.md."
 )
 
 
@@ -111,6 +113,87 @@ def archive_cycle(results: Path, prior_cycle: str) -> None:
             log(f"archived {name}/ -> {target.relative_to(results.parent)}")
 
 
+# ----------------------------------------------- prior ra* artifacts (design seed)
+# By the time rayleigh runs, earlier ra* tools have usually left rich context in the
+# project. `init` indexes it so the design session can PROPOSE a starting experiment set
+# instead of a blank skeleton. (group -> [(glob, what-it-gives-you)])
+PRIOR_SOURCES = [
+    ("Model / codebase (raster)", [
+        ("code/raster.yaml", "build config — the project brief + package"),
+        ("code/README.md", "what the codebase is"),
+        ("code/designdocs/DESIGN.md", "the model's design + architecture"),
+        ("code/designdocs/tasks.yaml", "the build spec — modules, parameters, interfaces"),
+        ("code/designdocs/PROGRESS.md", "what was actually built"),
+        ("code/planningDocs/*.md", "planning/build notes (IMPLEMENTATION_PLAN, build_log, …)"),
+        ("code/configs/**/*.yaml", "parameter configs — candidate sweep axes + baselines"),
+        ("code/**/CLAUDE.md", "codebase agent notes (invariants, known limits)"),
+    ]),
+    ("Literature (rabbitHole)", [
+        ("litReview/*.yaml", "review config — topics + snowball seeds"),
+        ("litReview/*.docx", "the literature review — expected directions, prior findings"),
+        ("litReview/output/*.docx", "review outputs"),
+    ]),
+    ("Paper (raconteur)", [
+        ("paper/*.md", "paper draft / venue analysis — which questions matter"),
+        ("paper/*.yaml", "outline / venue config"),
+    ]),
+]
+
+
+def discover_priors(root: Path):
+    """Find prior ra* artifacts. Returns [(group, [(label, [relpaths]), ...]), ...],
+    groups with no matches omitted."""
+    out = []
+    for group, patterns in PRIOR_SOURCES:
+        items = []
+        for pattern, label in patterns:
+            matches = sorted(str(p.relative_to(root)) for p in root.glob(pattern)
+                             if p.is_file())
+            if matches:
+                items.append((label, matches))
+        if items:
+            out.append((group, items))
+    return out
+
+
+def _derive_brief(root: Path) -> str:
+    """Fall back to the raster build brief/description when no rayleigh brief is given —
+    it's the closest statement of research intent already on disk."""
+    ry = root / "code" / "raster.yaml"
+    if not ry.is_file():
+        return ""
+    try:
+        d = yaml.safe_load(ry.read_text()) or {}
+    except Exception:
+        return ""
+    for k in ("brief", "description"):
+        v = d.get(k)
+        if isinstance(v, str) and v.strip() and "not provided" not in v and "to be generated" not in v:
+            return v.strip()
+    return ""
+
+
+def render_priors_md(root: Path, priors, project: str, cycle: str) -> str:
+    L = [f"# {project} — Prior artifacts (cycle {cycle})", "",
+         "*Index written by `rayleigh init`. The earlier ra* tools (raster, rabbitHole,",
+         "raconteur) left these in the project. Read them and PROPOSE a starting experimental",
+         "design from them — see PLANNING.md — rather than starting from a blank skeleton.*", ""]
+    if not priors:
+        L.append("_No prior ra* artifacts found — design from the brief alone._")
+        return "\n".join(L) + "\n"
+    for group, items in priors:
+        L.append(f"## {group}")
+        for label, matches in items:
+            shown = matches[:6]
+            more = f"  (+{len(matches) - 6} more)" if len(matches) > 6 else ""
+            if len(shown) == 1:
+                L.append(f"- **{label}** — `{shown[0]}`")
+            else:
+                L.append(f"- **{label}** — {', '.join(f'`{m}`' for m in shown)}{more}")
+        L.append("")
+    return "\n".join(L) + "\n"
+
+
 def launch_session(root: Path, no_launch: bool) -> int:
     playbook = root / "results" / "designdocs" / "PLANNING.md"
 
@@ -162,6 +245,10 @@ def run_init(args) -> int:
     brief = ask_longform("What do you want to find out this cycle?", preset=args.brief).strip()
     if not brief:
         brief = (prior.get("brief") or "").strip()
+    if not brief:
+        brief = _derive_brief(root)
+        if brief:
+            log("brief taken from code/raster.yaml (edit results/rayleigh.yaml to refine)")
 
     code_dir = root / "code"
     package = detect_package(code_dir, slugify(name))
@@ -201,6 +288,12 @@ def run_init(args) -> int:
     write(designdocs / "EXPERIMENTS.md", "EXPERIMENTS.md.tmpl", protect=True)
     write(designdocs / "experiments.yaml", "experiments.yaml.tmpl", protect=True)
     write(designdocs / "PROGRESS.md", "PROGRESS.md.tmpl", protect=True)
+
+    # Index the prior ra* artifacts so the design session can propose from them (refreshed each run).
+    priors = discover_priors(root)
+    (designdocs / "PRIORS.md").write_text(render_priors_md(root, priors, name, cycle))
+    n_priors = sum(len(matches) for _, items in priors for _, matches in items)
+    log(f"wrote results/designdocs/PRIORS.md ({n_priors} prior artifact(s) indexed)")
 
     log(f"cycle {cycle} · package under test: {package} ({code_path})")
     log("done.")

@@ -89,6 +89,16 @@ results/
 Then the interactive session reads `designdocs/PLANNING.md`, inspects `code/` to establish
 the run-adapter, and preregisters this cycle's experiments with you into `experiments.yaml`.
 
+### Designing from the prior ra* work
+
+rayleigh rarely starts cold — the earlier tools have usually left a raster-built `code/`
+(with `designdocs/` + `configs/`), a rabbitHole `litReview/`, and a raconteur `paper/`.
+`init` **indexes all of it** into `designdocs/PRIORS.md` and, when you don't supply a brief,
+derives one from `code/raster.yaml`. The design session opens `PRIORS.md` first and
+**proposes a starting experiment set** from it — `code/configs/` suggest the sweep axes and
+baselines, `litReview/` the expected directions, `paper/` which questions matter — which you
+then refine, rather than filling a blank skeleton.
+
 ## Conduct experiments
 
 Once `experiments.yaml` has experiments (from `init`):

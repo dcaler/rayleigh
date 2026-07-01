@@ -20,14 +20,28 @@ what makes a later result honest.
 Do **not** run anything, and do **not** modify `{{CODE_PATH}}`. rayleigh designs; `code/`
 runs. Your output is the spec; `conduct_exp` executes it later.
 
-## 1. Absorb the context (read first)
+## 1. Absorb the context, then PROPOSE — don't start blank
 
-- `designdocs/EXPERIMENTS.md` and `experiments.yaml` — the skeletons you'll fill.
-- The brief above, and the project's existing materials one level up: `paper/` (the
-  argument these experiments must support), `litReview/` (what's known / expected
-  directions), and any root notes.
-- `{{CODE_PATH}}/` — the codebase. Read its README / CLAUDE.md, its CLI, and its config
-  schema. You are looking for three things (they become the `run_adapter`):
+By the time rayleigh runs, the earlier ra* tools have usually left a lot to work from.
+`init` has indexed it in **`designdocs/PRIORS.md`** — read that first, then open the
+artifacts it points to. Your first deliverable is a **proposed starting experiment set**
+synthesized from them, which you then refine WITH the user (§2) — not a blank skeleton.
+
+What each prior gives you:
+
+- **`code/` (raster)** — `designdocs/DESIGN.md` + `tasks.yaml` are the model's design and its
+  parameters/interfaces; **`code/configs/`** are real parameter sets — the candidate **sweep
+  axes and baselines**. This is where experiment *designs* come from.
+- **`litReview/` (rabbitHole)** — the literature: the **expected directions** and prior
+  findings that motivate each `expected_direction`, and what's already known (don't re-ask it).
+- **`paper/` (raconteur)** — the argument and venue: **which questions matter** and what a
+  result has to support. This is where experiment *priorities* come from.
+
+Also read `designdocs/EXPERIMENTS.md` and `experiments.yaml` (the skeletons you'll fill) and
+the brief above. Then draft a proposed set of experiments and walk the user through them.
+
+Read `{{CODE_PATH}}/` for the codebase specifics — its README / CLAUDE.md, its CLI, and its
+config schema. You are looking for three things (they become the `run_adapter`):
   1. the **single-run entrypoint** — the callable or CLI command that takes one config
      and produces one output (e.g. `Simulation(cfg).run()` or `python -m pkg.cli run …`);
   2. the **config surface** — which parameters an experiment can vary (the axes);
