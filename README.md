@@ -134,9 +134,15 @@ rayleigh process_outputs --experiment E1 --no-docx   # one experiment; skip the 
 by default, or a `code.output_adapter.load` callable), aggregates over seeds, and renders the
 outputs preregistered in `init` — figures (line/bar/scatter/heatmap) into `results/figures/`
 and pivot tables — with an honest **finding** (observed summary next to the preregistered
-`expected_direction`, labeled `confirmatory`/`exploratory`, no auto-verdict). It writes
-`results/RESULTS.md` and the datestamped `results/{cycle}_{project}_results_ra.docx` (that
-`.docx` enters your ra/DCR annotation cycle; degrades to Markdown-only if python-docx is absent).
+`expected_direction`, labeled `confirmatory`/`exploratory`, no auto-verdict).
+
+It writes two kinds of deliverable, because rayleigh's reason to exist is to feed **raconteur**:
+
+- **For raconteur** (its `load_results()` ingests `results/` `*.md`/`*.json`/`*.csv`):
+  `RESULTS.md` (prose), **`findings.json`** (structured per-experiment — prereg + observed
+  finding + pointers to each figure/table), and **`tables/*.csv`** (the aggregated numbers).
+- **For you**: the datestamped `results/{cycle}_{project}_results_ra.docx` (your ra/DCR
+  annotation cycle; degrades to Markdown-only if python-docx is absent), plus `figures/`.
 
 ## Run at scale (trundlr)
 

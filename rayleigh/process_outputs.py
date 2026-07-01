@@ -13,15 +13,19 @@ Reading a cell's output(s) uses a loader (a cell may write several artifacts):
   - override: `code.output_adapter.load: "module:callable"` —
     callable(outputs: dict[name, path]) -> {metric: value}.
 
-Deliverable: `results/{cycle}_{project}_results_{ra}.docx` (python-docx; degrades to a
-Markdown RESULTS.md if python-docx is unavailable), plus figures in `results/figures/`.
+Deliverables, two audiences:
+  - for raconteur (its load_results ingests results/ *.md / *.json / *.csv): `RESULTS.md`
+    (prose), `findings.json` (structured per-experiment: prereg + observed finding + artifact
+    pointers), and `tables/*.csv` (the aggregated numbers). This is rayleigh's reason to exist.
+  - for the human: `results/{cycle}_{project}_results_{ra}.docx` (the ra/DCR review cycle;
+    python-docx, degrades to RESULTS.md if unavailable), plus figures in `results/figures/`.
 """
 
 import importlib
 import json
 import re
 import sys
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import yaml
@@ -252,6 +256,39 @@ def _build_markdown(project, cycle, brief, items, results: Path) -> str:
     return "\n".join(L)
 
 
+def _build_findings(project, cycle, brief, items, results: Path) -> str:
+    """Machine-readable per-experiment findings for the raconteur hand-off.
+
+    rayleigh's reason to exist is to feed raconteur; its load_results() ingests results/*.json
+    and *.csv. This is the structured layer (the .docx is the human deliverable) — the
+    preregistration, the observed finding, and pointers to the figure/table artifacts.
+    """
+    doc = {
+        "project": project, "cycle": cycle, "brief": brief,
+        "rayleigh_version": __version__,
+        "generated": datetime.now(timezone.utc).isoformat(),
+        "experiments": [],
+    }
+    for it in items:
+        exp = it["exp"]
+        metric = exp.get("metric") or {}
+        doc["experiments"].append({
+            "id": str(exp["id"]),
+            "title": exp.get("title", ""),
+            "mode": exp.get("mode", "confirmatory"),
+            "question": exp.get("question", ""),
+            "metric": {"name": metric.get("name"), "reduce": metric.get("reduce")},
+            "expected_direction": exp.get("expected_direction", ""),
+            "finding": it["finding"],
+            "cells": {"with_data": it["n_data"], "total": it["n_cells"]},
+            "figures": [{"path": str(p.relative_to(results)), "caption": c}
+                        for p, c in it["figures"]],
+            "tables": [{"path": str(p.relative_to(results)), "caption": c}
+                       for p, c in it.get("table_files", [])],
+        })
+    return json.dumps(doc, indent=2)
+
+
 def _build_docx(path: Path, project, cycle, brief, items, author) -> bool:
     try:
         from docx import Document
@@ -327,6 +364,7 @@ def run_process_outputs(args) -> int:
     cfg = load_config()
     figdir = results / "figures"
     figdir.mkdir(parents=True, exist_ok=True)
+    tabledir = results / "tables"
     loader = _get_loader(spec, code_dir)
 
     dry = getattr(args, "dry_run", False)
@@ -341,10 +379,10 @@ def run_process_outputs(args) -> int:
             continue
         if df.empty:
             log(f"{eid}: no cell data yet — run `rayleigh conduct_exp {eid}` first")
-            items.append({"exp": exp, "finding": "No data collected yet.",
-                          "figures": [], "tables": [], "n_data": 0, "n_cells": n_cells})
+            items.append({"exp": exp, "finding": "No data collected yet.", "figures": [],
+                          "tables": [], "table_files": [], "n_data": 0, "n_cells": n_cells})
             continue
-        figs, tables = [], []
+        figs, tables, table_files = [], [], []
         for i, o in enumerate(exp.get("outputs") or []):
             if o.get("kind") == "figure":
                 r = render_figure(df, o, eid, i, figdir)
@@ -353,15 +391,27 @@ def run_process_outputs(args) -> int:
             elif o.get("kind") == "table":
                 r = render_table(df, o, eid)
                 if r:
+                    piv, cap = r
                     tables.append(r)
+                    tabledir.mkdir(parents=True, exist_ok=True)  # CSV so raconteur gets the numbers
+                    csv_path = tabledir / f"{eid}_{i}_{_slug(cap)}.csv"
+                    piv.to_csv(csv_path)
+                    table_files.append((csv_path, cap))
         log(f"{eid}: {len(df)}/{n_cells} cells · {len(figs)} figure(s), {len(tables)} table(s)")
-        items.append({"exp": exp, "finding": finding_text(exp, df),
-                      "figures": figs, "tables": tables, "n_data": len(df), "n_cells": n_cells})
+        items.append({"exp": exp, "finding": finding_text(exp, df), "figures": figs,
+                      "tables": tables, "table_files": table_files,
+                      "n_data": len(df), "n_cells": n_cells})
     if dry:
         return 0
 
     (results / "RESULTS.md").write_text(_build_markdown(project, cycle, brief, items, results))
     log(f"wrote {(results / 'RESULTS.md').relative_to(root)}")
+
+    # Structured hand-off for raconteur (its load_results ingests results/*.json + *.csv).
+    (results / "findings.json").write_text(_build_findings(project, cycle, brief, items, results))
+    log(f"wrote {(results / 'findings.json').relative_to(root)}"
+        + (f" + {len([f for it in items for f in it.get('table_files', [])])} table CSV(s)"
+           if any(it.get("table_files") for it in items) else ""))
 
     if getattr(args, "no_docx", False):
         log("--no-docx: skipped the .docx (RESULTS.md written)")
