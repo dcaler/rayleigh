@@ -64,7 +64,7 @@ def _load_one(path: Path) -> dict:
 
 def _default_load(outputs: dict) -> dict:
     """Merge one cell's scalar metrics across its artifact(s) (outputs = {name: path}).
-    With several artifacts, keys are prefixed by name (`macro.gdp`) so they don't collide."""
+    With several artifacts, keys are prefixed by name (`summary.rmse`) so they don't collide."""
     multi = len(outputs) > 1
     merged = {}
     for name, path in outputs.items():

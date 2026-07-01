@@ -102,9 +102,9 @@ def expand_cells(exp: dict, adapter: dict) -> list[dict]:
 def resolve_cell_outputs(adapter: dict, results: Path, eid: str, cell: dict) -> dict:
     """Resolve a cell's output artifact path(s) → {name: Path}.
 
-    Two forms in run_adapter (a run may write several files, e.g. macro + trade):
-      - single: `output_template: "…"`            -> {"output": Path}
-      - multi:  `outputs: {macro: "…", trade: "…"}` -> {"macro": Path, "trade": Path}
+    Two forms in run_adapter (a run may write several files, e.g. a trajectory + a summary):
+      - single: `output_template: "…"`                    -> {"output": Path}
+      - multi:  `outputs: {timeseries: "…", summary: "…"}` -> {"timeseries": Path, "summary": Path}
     """
     outs = adapter.get("outputs")
     templates = dict(outs) if outs else {"output": adapter.get("output_template") or DEFAULT_TEMPLATE}

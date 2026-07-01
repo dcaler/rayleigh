@@ -112,8 +112,8 @@ rayleigh conduct_exp E1 --workers 32 --limit 8   # parallelism + smoke-test a fe
 `conduct_exp` expands an experiment's `design` (a `sweep` over axes, or named `conditions`)
 into cells — one parameter combo × one seed — and invokes `code/` per the
 `code.run_adapter` (either an in-process `import` entrypoint or a `subprocess` command). A
-cell may write **one artifact** (`output_template:`) or **several** (`outputs: {macro: …,
-trade: …}` — a run counts as done only when all exist; `process_outputs` merges them,
+cell may write **one artifact** (`output_template:`) or **several** (`outputs: {timeseries: …,
+summary: …}` — a run counts as done only when all exist; `process_outputs` merges them,
 prefixing metric keys by name). It's **restartable** (skips cells whose outputs already
 exist) and writes a provenance sidecar (`*.prov.json`: code git SHA, params, seed, rayleigh
 version) per cell, plus a `data/<E>/_status.json` summary.

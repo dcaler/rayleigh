@@ -34,18 +34,18 @@ code:
 
     # ONE artifact per cell — the common case:
     output_template: "data/{experiment}/{cellkey}_seed{seed}.parquet"  # placeholders: {experiment} {cellkey} {seed} {param}
-    # …OR SEVERAL artifacts per cell (e.g. a model that writes a macro + trade file). A cell
-    # counts as done only when ALL its outputs exist:
+    # …OR SEVERAL artifacts per cell (e.g. a model that writes a trajectory + a summary file).
+    # A cell counts as done only when ALL its outputs exist:
     # outputs:
-    #   macro: "data/{experiment}/{cellkey}_seed{seed}_macro.parquet"
-    #   trade: "data/{experiment}/{cellkey}_seed{seed}_trade.parquet"
+    #   timeseries: "data/{experiment}/{cellkey}_seed{seed}_timeseries.parquet"
+    #   summary:    "data/{experiment}/{cellkey}_seed{seed}_summary.parquet"
 
     workers: 8                     # default parallelism (per-experiment override allowed)
 
   # output_adapter:                # OPTIONAL — how process_outputs reads a cell's metrics.
   #   load: "{{PACKAGE}}_adapter:load_metrics"   # callable(outputs: dict[name, path]) -> {metric: value}
   #   Default (no adapter): JSON dict of scalars, or numeric column means of parquet/csv;
-  #   with several artifacts, metric keys are prefixed by name (e.g. `macro.gdp`, `trade.nx`).
+  #   with several artifacts, metric keys are prefixed by name (e.g. `summary.rmse`, `timeseries.peak`).
 
 # ── PER-EXPERIMENT (a list; add one block per experiment) ────────────────────────────
 experiments:
