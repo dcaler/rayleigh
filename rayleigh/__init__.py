@@ -10,9 +10,9 @@ Verbs:
   rayleigh init            scaffold results/, open/roll a research cycle, and run the
                            interactive prereg/design session -> designdocs/experiments.yaml
   rayleigh conduct_exp <E> expand an experiment's design into cells and run them against
-                           code/ (restartable, provenance)                 [not yet built]
+                           code/ (restartable, provenance)
   rayleigh process_outputs reduce data -> the preregistered outputs -> findings -> the
-                           datestamped .docx write-up                       [not yet built]
+                           datestamped .docx write-up
 
 The atomic unit is the experiment (question + design + metric + outputs = one finding);
 a sweep is the common interior shape of an experiment's design.

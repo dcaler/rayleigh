@@ -38,8 +38,13 @@ def build_parser() -> argparse.ArgumentParser:
                          help="run at most N not-yet-done cells this pass (smoke testing)")
 
     process = sub.add_parser("process_outputs",
-                             help="reduce data -> preregistered outputs -> the .docx write-up  [not yet built]")
+                             help="reduce data -> preregistered outputs -> the .docx write-up")
     _common(process)
+    process.add_argument("--experiment", help="process only this experiment id (default: all)")
+    process.add_argument("--no-docx", action="store_true",
+                         help="write RESULTS.md + figures only; skip the .docx")
+    process.add_argument("--dry-run", action="store_true",
+                         help="report data availability + planned outputs; render nothing")
 
     return ap
 

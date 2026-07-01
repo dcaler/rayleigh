@@ -8,7 +8,12 @@ version = "0.1.0"
 description = "Experiment designer & runner in the ra* family — designs, conducts, and writes up experiments against a codebase."
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["PyYAML>=6"]
+dependencies = [
+    "PyYAML>=6",
+    "pandas>=1.3",       # process_outputs: tidy cell table + aggregation
+    "matplotlib>=3.4",   # process_outputs: figures
+    "python-docx>=0.8",  # process_outputs: the .docx write-up (degrades if absent)
+]
 
 [project.scripts]
 rayleigh = "rayleigh.cli:main"

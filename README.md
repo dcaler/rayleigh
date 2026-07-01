@@ -17,7 +17,7 @@ rayleigh init             ▸ scaffold results/, open/roll a research cycle, and
 rayleigh conduct_exp <E>  ▸ expand an experiment's design into cells and run them against
                             code/ (restartable, provenance)
 rayleigh process_outputs  ▸ reduce data → the preregistered outputs → findings →
-                            the datestamped .docx write-up                  [Session 3]
+                            the datestamped .docx write-up
 ```
 
 rayleigh lives at `github.com/dcaler/rayleigh`. Each project it works on has its own
@@ -104,8 +104,25 @@ It's **restartable** (skips cells whose output already exists) and writes a prov
 sidecar (`*.prov.json`: code git SHA, params, seed, rayleigh version) beside each output,
 plus a `data/<E>/_status.json` summary.
 
+## Write up the results
+
+Once cells have data (from `conduct_exp`):
+
+```bash
+rayleigh process_outputs --dry-run     # per experiment: data availability + planned outputs
+rayleigh process_outputs               # render figures/tables → RESULTS.md + the .docx
+rayleigh process_outputs --experiment E1 --no-docx   # one experiment; skip the .docx
+```
+
+`process_outputs` re-expands each experiment's cells, loads their outputs (JSON/parquet/csv
+by default, or a `code.output_adapter.load` callable), aggregates over seeds, and renders the
+outputs preregistered in `init` — figures (line/bar/scatter/heatmap) into `results/figures/`
+and pivot tables — with an honest **finding** (observed summary next to the preregistered
+`expected_direction`, labeled `confirmatory`/`exploratory`, no auto-verdict). It writes
+`results/RESULTS.md` and the datestamped `results/{cycle}_{project}_results_ra.docx` (that
+`.docx` enters your ra/DCR annotation cycle; degrades to Markdown-only if python-docx is absent).
+
 ## Status
 
-`init` and `conduct_exp` are implemented. `process_outputs` is stubbed with its contract
-pinned — it reduces the data `conduct_exp` produced into each experiment's preregistered
-outputs and the datestamped `.docx` write-up.
+All three verbs are implemented: `init` (design), `conduct_exp` (run), `process_outputs`
+(write up). The full loop — design → conduct → write up → `.docx` — works end to end.
