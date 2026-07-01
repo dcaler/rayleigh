@@ -94,10 +94,14 @@ theoretically motivated. Write each answer into an `experiments:` entry as you g
    `process_outputs` executes — so specify axes, facets, and the caption's takeaway.
 6. **Mode** — `confirmatory` (predicted in advance; the prereg above is binding) or
    `exploratory` (poking at the data; findings will be labeled as such, not overclaimed).
-7. **Resource** — `resource: cpu` (default) or `gpu`, per experiment: does *this*
-   experiment's `code/` path need a GPU? Most sims here are CPU-bound. `rayleigh queue`
-   sends each experiment's `conduct_exp` to the matching trundlr resource; local runs and
-   `process_outputs` ignore it. (Set it now so the queued chain is scheduled correctly.)
+7. **Resource** — `resource: cpu` or `gpu`, per experiment. **Surface this decision to the
+   user — do not set it silently.** From what you found in `code/`, state which resource you're
+   assigning and why ("CPU-bound ABM, no GPU code path → `resource: cpu`"), and let them
+   confirm or override before you write it. Do the same for the compute-sizing you chose in
+   step 2 — tell the user the `workers` count and the machine assumptions behind it. Most sims
+   here are CPU-bound, but the point is that resource/compute choices are the user's to see and
+   veto, not something the session decides on its own. `rayleigh queue` schedules each
+   experiment's `conduct_exp` on its `resource`; local runs and `process_outputs` ignore it.
 
 ## 3. Honesty, not gates
 
