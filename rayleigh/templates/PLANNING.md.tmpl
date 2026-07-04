@@ -79,12 +79,16 @@ theoretically motivated. Write each answer into an `experiments:` entry as you g
 2. **Design** — what varies and how. Pick the shape: `sweep` (cartesian axes),
    `conditions` (named arms), `oat` (one-at-a-time sensitivity), `ablation` (features off).
    Set the axes and the number of `seeds` (Monte Carlo reps). Sanity-check the cell count
-   (product of axis lengths × seeds) against compute budget. Then set **`workers`** — how many
-   cells `conduct_exp` runs in parallel — sized to the machine that will run this experiment:
-   inspect it (cores via `nproc`, memory via `free -g`), estimate one run's RAM footprint from
-   `code/` (or a single pilot cell), and choose `workers ≤ cores` **and** `workers × per-run RAM
-   ≤ usable RAM` — a box that swaps is slower than a smaller pool. This matters most for CPU
-   experiments; for a GPU experiment, bound `workers` by VRAM instead (often 1–few concurrent).
+   (product of axis lengths × seeds) against compute budget. Then set **`workers`** — the
+   *intended* parallelism — sized to the machine that will run this experiment: inspect it
+   (cores via `nproc`, memory via `free -g`) and pick `workers ≤ cores`, a **power of two**
+   (8/16/32…). Treat this as an upper bound, not a safety guarantee: at run time `conduct_exp`
+   **pilots the first cell, measures its real RAM footprint, and lowers `workers` on its own if
+   the pool wouldn't fit** — and caps each worker with a hard memory ceiling so a runaway cell
+   dies with MemoryError instead of taking the machine into swap. So you no longer have to nail
+   the per-run RAM by hand; you state intent and the runtime enforces safety. For a GPU
+   experiment, still bound `workers` by VRAM (often 1–few) — the RAM guard sizes host memory but
+   sets no address-space cap on GPU cells.
 3. **Metric** — the measured quantity and how cells/seeds `reduce` to it. Fix this now;
    choosing the metric *after* seeing data is how findings become artifacts.
 4. **Expected direction** — the predicted result and the theory/literature it rests on.
@@ -98,7 +102,8 @@ theoretically motivated. Write each answer into an `experiments:` entry as you g
    user — do not set it silently.** From what you found in `code/`, state which resource you're
    assigning and why ("CPU-bound ABM, no GPU code path → `resource: cpu`"), and let them
    confirm or override before you write it. Do the same for the compute-sizing you chose in
-   step 2 — tell the user the `workers` count and the machine assumptions behind it. Most sims
+   step 2 — tell the user the intended `workers` count and the machine assumptions behind it, and
+   that `conduct_exp` will pilot-measure RAM and reduce it if needed (never raise it). Most sims
    here are CPU-bound, but the point is that resource/compute choices are the user's to see and
    veto, not something the session decides on its own. `rayleigh queue` schedules each
    experiment's `conduct_exp` on its `resource`; local runs and `process_outputs` ignore it.

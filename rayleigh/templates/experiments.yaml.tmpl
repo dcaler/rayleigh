@@ -65,10 +65,14 @@ experiments:
         param_b: [0.0, 0.5, 1.0]
       seeds: 16                    # Monte Carlo replications per cell
 
-    workers: 8                     # parallel cells for THIS experiment — sized in `init` to the
-                                   #   machine that runs it: <= cores, AND workers x per-run RAM
-                                   #   <= usable RAM (esp. for CPU experiments; a swapping box is
-                                   #   slower than a smaller pool). GPU: size to VRAM (often 1-few).
+    workers: 8                     # INTENDED parallel cells for THIS experiment (upper bound).
+                                   #   Set <= cores, a power of two (8/16/32…). conduct_exp then
+                                   #   pilot-measures the first cell's RAM and LOWERS this if the
+                                   #   pool wouldn't fit usable RAM, and caps each worker with a
+                                   #   hard memory ceiling (a runaway cell dies, the box doesn't
+                                   #   swap). So this is intent, not a safety guarantee — the
+                                   #   runtime enforces the fit. GPU: size to VRAM (often 1-few).
+                                   #   (Disable the guard with `conduct_exp --no-mem-guard`.)
     # seeds: 64                    # optional: override the design's seeds for this experiment
     # budget_hours: 2              # optional: trundlr scheduling window for `rayleigh queue`
 

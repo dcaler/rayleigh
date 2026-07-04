@@ -36,6 +36,9 @@ def build_parser() -> argparse.ArgumentParser:
                          help="parallel workers (default: experiment/run_adapter setting)")
     conduct.add_argument("--limit", type=int, default=0,
                          help="run at most N not-yet-done cells this pass (smoke testing)")
+    conduct.add_argument("--no-mem-guard", action="store_true",
+                         help="skip the pilot-measured RAM sizing + per-worker memory ceiling "
+                              "(default: on). Only use if you have sized workers yourself.")
 
     process = sub.add_parser("process_outputs",
                              help="reduce data -> preregistered outputs -> the .docx write-up")

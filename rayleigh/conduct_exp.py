@@ -20,9 +20,12 @@ The run_adapter (file-level `code.run_adapter` in experiments.yaml) says HOW to 
 
 import itertools
 import json
+import multiprocessing as mp
+import os
 import re
 import subprocess
 import sys
+import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,6 +40,181 @@ DEFAULT_TEMPLATE = "data/{experiment}/{cellkey}_seed{seed}.parquet"
 
 def log(msg: str) -> None:
     print(f"[rayleigh conduct_exp] {msg}", flush=True)
+
+
+# --------------------------------------------------------------------- resource sizing
+def _available_ram_gb() -> float | None:
+    """Usable RAM in GiB, or None if it can't be read (non-Linux, restricted /proc)."""
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) / (1024 * 1024)   # kB -> GiB
+    except Exception:
+        pass
+    try:                                       # POSIX fallback: free pages x page size
+        return (os.sysconf("SC_AVPHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")) / (1024 ** 3)
+    except (ValueError, OSError, AttributeError):
+        return None
+
+
+def _pow2_floor(n: int) -> int:
+    """Largest power of two <= n (>=1). Snaps worker counts to a clean 1/2/4/8/16/32… ladder.
+    Floor (not nearest) so normalizing never *raises* parallelism into a RAM wall — 28 -> 16."""
+    return 1 << (n.bit_length() - 1) if n >= 1 else 1
+
+
+def _plan_workers(requested: int) -> tuple[int, str]:
+    """Normalize a requested worker count to a sane pool for THIS machine and describe it.
+
+    Two mechanical guards rayleigh can enforce without knowing per-cell RAM:
+      * cap at core count (a pool wider than cores only adds contention), and
+      * snap to a power of two (8/16/32…) — arbitrary counts like 28 buy nothing and
+        the floor keeps the change on the safe side of memory.
+    Per-run RAM is the experiment author's call (PLANNING.md); we surface what we can see
+    (cores, available RAM) and flag a thin <1 GiB/worker margin rather than clamp silently."""
+    cores = os.cpu_count() or requested
+    effective = max(1, _pow2_floor(min(requested, cores)))
+    ram = _available_ram_gb()
+    ram_str = f"{ram:.0f} GiB avail" if ram is not None else "RAM unknown"
+    parts = [f"{cores} cores", ram_str]
+    if effective != requested:
+        parts.append(f"workers {requested} -> {effective} (<= cores, snapped to power of two)")
+    else:
+        parts.append(f"workers {effective}")
+    if ram is not None and effective > ram:            # fewer than ~1 GiB per worker
+        parts.append(f"⚠ <1 GiB/worker — watch for swap/OOM (see PLANNING.md sizing)")
+    return effective, " · ".join(parts)
+
+
+# ---- memory guard: MEASURE one cell, then size the pool + cap each worker to fit RAM -------
+# The design session's per-run RAM figure is an estimate; an estimate that's wrong by a few x
+# and fanned out over a wide pool is exactly how a run OOMs the machine. So conduct_exp does not
+# trust the estimate: it runs the first cell alone, measures its real peak footprint, sizes the
+# pool from that vs. actually-available RAM, and puts a hard RLIMIT_AS ceiling under each worker
+# so a runaway cell dies with MemoryError instead of taking the box into swap. This must hold on
+# ANY machine/experiment — the guarantee is enforced here, not assumed from the spec.
+_MEM_SAFETY = 0.75      # commit at most this fraction of *available* RAM to the whole pool
+_HEADROOM = 1.5         # let a cell grow to this multiple of its measured pilot peak
+
+
+def _proc_mem_bytes(pid: int) -> tuple[int, int]:
+    """(VmRSS, VmSize) in bytes for one pid, (0, 0) if it's gone."""
+    rss = vsize = 0
+    try:
+        with open(f"/proc/{pid}/status") as fh:
+            for line in fh:
+                if line.startswith("VmRSS:"):
+                    rss = int(line.split()[1]) * 1024
+                elif line.startswith("VmSize:"):
+                    vsize = int(line.split()[1]) * 1024
+    except (OSError, ValueError):
+        pass
+    return rss, vsize
+
+
+def _proc_tree(root_pid: int) -> list[int]:
+    """`root_pid` plus all its descendants, via /proc ppid links (a cell may fork children)."""
+    kids: dict[int, list[int]] = {}
+    try:
+        entries = [e for e in os.listdir("/proc") if e.isdigit()]
+    except OSError:
+        return [root_pid]
+    for e in entries:
+        try:
+            with open(f"/proc/{e}/stat") as fh:
+                data = fh.read()
+            ppid = int(data.rsplit(")", 1)[1].split()[1])   # field 4, after the (comm) group
+        except (OSError, IndexError, ValueError):
+            continue
+        kids.setdefault(ppid, []).append(int(e))
+    out, stack = [], [root_pid]
+    while stack:
+        p = stack.pop()
+        out.append(p)
+        stack.extend(kids.get(p, []))
+    return out
+
+
+def _tree_mem_bytes(root_pid: int) -> tuple[int, int]:
+    """(sum RSS over the tree, max VmSize of any one process in it). RSS drives how many cells
+    fit in physical RAM; the largest single VmSize drives the per-worker address-space ceiling."""
+    rss_sum = vsize_max = 0
+    for p in _proc_tree(root_pid):
+        r, v = _proc_mem_bytes(p)
+        rss_sum += r
+        vsize_max = max(vsize_max, v)
+    return rss_sum, vsize_max
+
+
+def _pilot_entry(job: dict, conn) -> None:
+    conn.send(_execute_cell(job))
+    conn.close()
+
+
+def _measure_pilot(job: dict) -> tuple[float, float, dict]:
+    """Run ONE cell in a child process and sample its process-tree footprint to peak.
+    Returns (peak_tree_RSS_GiB, peak_single_VmSize_GiB, cell_result). The cell's output is
+    real work — kept, not thrown away."""
+    ctx = mp.get_context("fork")            # fork: child inherits sys.path; pid is sampleable
+    parent_conn, child_conn = ctx.Pipe()
+    proc = ctx.Process(target=_pilot_entry, args=(job, child_conn))
+    proc.start()
+    peak_rss = peak_vsize = 0
+    while proc.is_alive():
+        rss, vsize = _tree_mem_bytes(proc.pid)
+        peak_rss, peak_vsize = max(peak_rss, rss), max(peak_vsize, vsize)
+        time.sleep(0.1)
+    proc.join()
+    if parent_conn.poll():
+        result = parent_conn.recv()
+    else:                                    # child died without reporting (e.g. OOM-killed)
+        primary = next(iter(job["outputs"].values()))
+        result = {"output": str(primary), "status": "failed",
+                  "error": "pilot cell produced no result (killed before returning?)"}
+    return peak_rss / (1024 ** 3), peak_vsize / (1024 ** 3), result
+
+
+def _size_by_memory(peak_rss_gb: float, peak_vsize_gb: float,
+                    machine_workers: int, resource_kind: str) -> tuple[int, int, str]:
+    """From the measured pilot footprint, decide (workers, per-worker RLIMIT_AS bytes, report).
+    workers is chosen so the whole pool's RSS fits the RAM budget; the AS ceiling is the OS-level
+    backstop against a single cell running away. resource=gpu keeps the RSS sizing but sets no AS
+    limit (CUDA reserves huge virtual ranges that a limit would false-trip)."""
+    avail = _available_ram_gb()
+    gpu = str(resource_kind).lower() == "gpu"
+    if avail is None:                        # can't see RAM: don't pretend to guarantee anything
+        return machine_workers, 0, (f"RAM unreadable — kept workers={machine_workers}, no cap "
+                                    f"(watch this run for swap)")
+    budget = avail * _MEM_SAFETY
+    per_cell = max(peak_rss_gb, 0.01)
+    by_mem = max(1, int(budget // (per_cell * _HEADROOM)))
+    workers = max(1, _pow2_floor(min(machine_workers, by_mem)))
+    ceiling_gb = max(peak_vsize_gb, peak_rss_gb) * _HEADROOM
+    if workers == 1:
+        ceiling_gb = max(ceiling_gb, budget)       # a lone big cell may use the whole budget
+    as_bytes = 0 if gpu else int(ceiling_gb * (1024 ** 3))
+    report = (f"pilot peak {peak_rss_gb:.1f} GiB RSS / {peak_vsize_gb:.1f} GiB virt · "
+              f"{avail:.0f} GiB avail, budget {budget:.0f} GiB ({int(_MEM_SAFETY * 100)}%) → "
+              f"workers {machine_workers}→{workers}")
+    report += (" · resource=gpu, host-RAM sized, no address-space cap" if gpu
+               else f" · per-worker cap {ceiling_gb:.1f} GiB (RLIMIT_AS)")
+    if workers < machine_workers:
+        report += "  [reduced to fit RAM]"
+    return workers, as_bytes, report
+
+
+def _limit_address_space(as_bytes: int) -> None:
+    """ProcessPoolExecutor initializer: cap this worker's virtual memory. A cell that exceeds it
+    gets MemoryError/ENOMEM (and any subprocess it spawns inherits the limit) instead of swapping
+    the whole machine. No-op when unset or unsupported."""
+    if not as_bytes or as_bytes <= 0:
+        return
+    try:
+        import resource as R
+        _soft, hard = R.getrlimit(R.RLIMIT_AS)
+        R.setrlimit(R.RLIMIT_AS, (int(as_bytes), hard))
+    except (ImportError, ValueError, OSError):
+        pass
 
 
 def add_import_paths(*dirs) -> None:
@@ -247,7 +425,8 @@ def run_conduct_exp(args) -> int:
     adapter = code.get("run_adapter") or {}
     kind = adapter.get("kind", "import")
     multi = bool(adapter.get("outputs"))     # mapping form -> callable(params, seed, outputs)
-    workers = getattr(args, "workers", 0) or exp.get("workers") or adapter.get("workers") or DEFAULT_WORKERS
+    requested = getattr(args, "workers", 0) or exp.get("workers") or adapter.get("workers") or DEFAULT_WORKERS
+    workers, worker_report = _plan_workers(requested)
     code_dir = (results / (code.get("path") or "../code")).resolve()
 
     try:
@@ -268,7 +447,8 @@ def run_conduct_exp(args) -> int:
 
     nout = len(cells[0]["outputs"]) if cells else 1
     log(f"experiment {eid}: {len(cells)} cells ({done_already} already done, {len(todo)} to run) "
-        f"· kind={kind} · {nout} output(s)/cell · workers={workers}")
+        f"· kind={kind} · {nout} output(s)/cell")
+    log(f"resources: {worker_report}")
 
     if getattr(args, "dry_run", False):
         for c in cells[:20]:
@@ -298,11 +478,36 @@ def run_conduct_exp(args) -> int:
     } for c in todo]
 
     results_out = []
-    if workers <= 1:
-        results_out = [_execute_cell(j) for j in jobs]
+    mem_guard = not getattr(args, "no_mem_guard", False)
+    resource_kind = exp.get("resource", "cpu")
+    as_ceiling = 0
+    run_jobs = jobs
+
+    # MEASURE before fanning out: run the first cell alone, size the pool from its real footprint,
+    # and derive the per-worker RAM ceiling. This is what keeps a wide pool from OOM-ing the box.
+    if mem_guard:
+        peak_rss, peak_vsize, pilot_res = _measure_pilot(jobs[0])
+        results_out.append(pilot_res)
+        run_jobs = jobs[1:]
+        workers, as_ceiling, size_report = _size_by_memory(
+            peak_rss, peak_vsize, workers, resource_kind)
+        log(f"memory guard: {size_report}")
+        if pilot_res["status"] == "failed":
+            log(f"  ⚠ pilot cell failed — {pilot_res['error']}")
     else:
-        with ProcessPoolExecutor(max_workers=workers) as ex:
-            futs = [ex.submit(_execute_cell, j) for j in jobs]
+        log("memory guard: DISABLED (--no-mem-guard) — pool sized by --workers only, no RAM ceiling")
+
+    if not run_jobs:
+        pass
+    elif not mem_guard and workers <= 1:
+        results_out += [_execute_cell(j) for j in run_jobs]     # in-process: easiest to debug
+    else:
+        # Route even the serial (workers==1) guarded case through the pool so the RLIMIT_AS
+        # ceiling lands on a *worker*, never on rayleigh's own process.
+        with ProcessPoolExecutor(max_workers=max(1, workers),
+                                 initializer=_limit_address_space,
+                                 initargs=(as_ceiling,)) as ex:
+            futs = [ex.submit(_execute_cell, j) for j in run_jobs]
             for f in as_completed(futs):
                 results_out.append(f.result())
 
