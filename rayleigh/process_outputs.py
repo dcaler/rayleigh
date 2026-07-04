@@ -170,7 +170,19 @@ def render_figure(df, spec: dict, eid: str, idx: int, figdir: Path):
             g = df.groupby(x)[y].mean().reset_index()
             ax.bar(g[x].astype(str), g[y]); ax.set_xlabel(x); ax.set_ylabel(y)
         elif ftype == "heatmap":
-            val = spec.get("value") or y
+            # A heatmap's colour axis is its THIRD field: `z` (conventional) or `value`.
+            # It must be a metric, not one of the plane's axes — pivoting with values==index
+            # is what raises the cryptic "Grouper for '<axis>' not 1-dimensional".
+            val = spec.get("z") or spec.get("value")
+            if not val or val in (x, y):
+                log(f"  {eid} fig {idx}: heatmap needs a `z:` (or `value:`) metric distinct "
+                    f"from x='{x}'/y='{y}' — got {val!r}; skipped")
+                plt.close(fig)
+                return None
+            if val not in df.columns:
+                log(f"  {eid} fig {idx}: heatmap z='{val}' not in data — skipped")
+                plt.close(fig)
+                return None
             piv = df.pivot_table(index=y, columns=x, values=val, aggfunc="mean")
             im = ax.imshow(piv.values, aspect="auto", origin="lower")
             ax.set_xticks(range(len(piv.columns))); ax.set_xticklabels(piv.columns)
@@ -212,9 +224,12 @@ def _observed_summary(exp: dict, df) -> str:
     outs = exp.get("outputs") or []
     x = y = None
     for o in outs:
-        if o.get("kind") == "figure" and o.get("x") and o.get("y"):
-            x, y = o["x"], o["y"]
-            break
+        if o.get("kind") != "figure" or not o.get("x"):
+            continue
+        # summarize the plotted METRIC vs x: a heatmap's metric is `z`/`value`, otherwise `y`.
+        x = o["x"]
+        y = o.get("z") or o.get("value") or o.get("y")
+        break
     if not (x and y) or x not in df.columns or y not in df.columns:
         return "data collected; no single x/y trend to summarize automatically"
     try:
@@ -415,6 +430,14 @@ def run_process_outputs(args) -> int:
                     csv_path = tabledir / f"{eid}_{i}_{_slug(cap)}.csv"
                     piv.to_csv(csv_path)
                     table_files.append((csv_path, cap))
+            else:
+                # A preregistered output rayleigh can't render itself (e.g. `artifact`, `stat`).
+                # Don't drop it silently — say so, so a planned deliverable never just vanishes.
+                kind = o.get("kind") or "(no kind)"
+                name = o.get("name") or o.get("caption") or ""
+                log(f"  {eid} out {i}: output kind '{kind}' not rendered by process_outputs"
+                    f"{f' ({name[:50]})' if name else ''} — produce it from the stored data "
+                    f"(e.g. an adapter helper), then reference it in the write-up")
         log(f"{eid}: {len(df)}/{n_cells} cells · {len(figs)} figure(s), {len(tables)} table(s)")
         items.append({"exp": exp, "finding": finding_text(exp, df), "figures": figs,
                       "tables": tables, "table_files": table_files,

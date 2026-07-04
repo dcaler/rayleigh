@@ -90,6 +90,14 @@ experiments:
         y: (metric)
         facet: param_a
         caption: "(what the reader should take away)"
+      # HEATMAP form — x and y are the two swept AXES; the colour is a third field `z`
+      # (the metric). z MUST be a metric column, not one of the axes:
+      # - kind: figure
+      #   type: heatmap
+      #   x: param_b               # column axis
+      #   y: param_a               # row axis
+      #   z: (metric)              # colour = the metric to show over the x*y plane
+      #   caption: "..."
       # - kind: table
       #   rows: param_a
       #   cols: param_b
