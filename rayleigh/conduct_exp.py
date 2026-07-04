@@ -275,9 +275,18 @@ def _param_combos(design: dict) -> list[dict]:
 
 
 def expand_cells(exp: dict, adapter: dict) -> list[dict]:
-    """Expand an experiment into cells: [{params, seed}, ...]."""
+    """Expand an experiment into cells: [{params, seed}, ...].
+
+    `fixed:` (a dict of constant params) is merged into every cell — the way to pin a
+    parameter across a whole experiment that isn't a swept axis (e.g. an arm selector
+    `mode: monkey` shared by every cell of a grid). A swept axis of the same name wins."""
     design = exp.get("design") or {}
     combos = _param_combos(design)
+    fixed = exp.get("fixed") or {}
+    if fixed and not isinstance(fixed, dict):
+        raise ValueError(f"experiment {exp.get('id')}: `fixed` must be a mapping, got {fixed!r}")
+    if fixed:
+        combos = [{**fixed, **combo} for combo in combos]     # swept axis overrides a fixed key
     seeds = exp.get("seeds", design.get("seeds", 1))
     try:
         n_seeds = int(seeds)

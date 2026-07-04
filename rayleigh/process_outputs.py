@@ -97,14 +97,15 @@ def _get_loader(spec: dict, code_dir: Path, results: Path):
 
 def _param_keys(exp: dict) -> list:
     design = exp.get("design") or {}
+    fixed = list((exp.get("fixed") or {}).keys())      # constants are params, not metrics
     if design.get("kind") == "conditions":
-        keys = []
+        keys = list(fixed)
         for c in design.get("conditions") or []:
             for k in c:
                 if k not in keys:
                     keys.append(k)
         return keys
-    return list((design.get("axes") or {}).keys())
+    return fixed + [k for k in (design.get("axes") or {}).keys() if k not in fixed]
 
 
 def build_table(exp: dict, adapter: dict, results: Path, loader):

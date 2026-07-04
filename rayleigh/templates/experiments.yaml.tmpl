@@ -65,6 +65,13 @@ experiments:
         param_b: [0.0, 0.5, 1.0]
       seeds: 16                    # Monte Carlo replications per cell
 
+    # fixed:                       # OPTIONAL — constant params merged into EVERY cell of this
+    #   mode: monkey               #   experiment (not swept). Use for an arm selector or any
+    #                              #   parameter pinned across the whole grid; reaches the adapter
+    #                              #   in `params`. Becomes part of the cellkey (so two experiments
+    #                              #   sharing a grid but differing by a fixed param don't collide).
+    #                              #   A swept axis of the same name overrides it.
+
     workers: 8                     # INTENDED parallel cells for THIS experiment (upper bound).
                                    #   Set <= cores, a power of two (8/16/32…). conduct_exp then
                                    #   pilot-measures the first cell's RAM and LOWERS this if the
