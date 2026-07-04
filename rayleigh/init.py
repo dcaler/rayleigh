@@ -32,6 +32,12 @@ DESIGN_PROMPT = (
     "in discussion. From that + the priors, propose a starting experiment design, refine it with "
     "me, and write the finalized brief into results/rayleigh.yaml plus "
     "results/designdocs/experiments.yaml (incl. the run_adapter from code/) and EXPERIMENTS.md. "
+    "Three hard rules, and I should not have to remind you of them: (1) READ THE PRIORS FIRST — "
+    "including the annotated litReview/ docx, not just code/ — before you propose any expected "
+    "direction, and name the prior each one rests on; (2) SURFACE EVERY RESOURCE/COMPUTE DECISION "
+    "(resource cpu|gpu, workers) for me to confirm — never set it silently; (3) YOU DESIGN AND "
+    "PREREGISTER ONLY — you never run experiments (that is `rayleigh conduct_exp`/`queue`), and you "
+    "never state an un-run number as if it were a result. "
     "Start by reading PLANNING.md and PRIORS.md, then talk to me."
 )
 

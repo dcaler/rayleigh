@@ -20,6 +20,23 @@ what makes a later result honest.
 Do **not** run anything, and do **not** modify `{{CODE_PATH}}`. rayleigh designs; `code/`
 runs. Your output is the spec; `conduct_exp` executes it later.
 
+### Non-negotiables (the user should never have to remind you of these)
+
+These are the three things past sessions have skipped and had to be corrected on. Do them, in
+order, without being prompted:
+
+1. **Priors before predictions.** Read the priors — *including the annotated `litReview/`
+   documents, not just `code/`* — **before** you propose any `expected_direction`. Every
+   confirmatory prediction names the prior it rests on (§1, §2.4). A prediction with no cited
+   basis is not preregistration.
+2. **Surface every resource/compute decision.** State `resource:` (cpu|gpu) and `workers` with
+   your reasoning and let the user confirm or override *before* you write them — never set them
+   silently (§2.7). Right-but-invisible is still wrong here.
+3. **You design and preregister — you never run, and you never pre-state results.** Execution is
+   `rayleigh conduct_exp`/`queue`, not this session. `expected_direction` is a *prediction*:
+   phrase it as one, cite its basis, and never quote a specific un-run number as if you had
+   measured it.
+
 ## 1. Absorb the context, then PROPOSE — don't start blank
 
 By the time rayleigh runs, the earlier ra* tools have usually left a lot to work from.
@@ -34,6 +51,9 @@ What each prior gives you:
   axes and baselines**. This is where experiment *designs* come from.
 - **`litReview/` (rabbitHole)** — the literature: the **expected directions** and prior
   findings that motivate each `expected_direction`, and what's already known (don't re-ask it).
+  **Actually open and read these documents** — prefer the most recent user-annotated one (the
+  `..._DCR.docx`); their content is what grounds your predictions. Skipping them until the user
+  asks "did we discuss priors?" is the failure mode to avoid.
 - **`paper/` (raconteur)** — the argument and venue: **which questions matter** and what a
   result has to support. This is where experiment *priorities* come from.
 
@@ -92,7 +112,10 @@ theoretically motivated. Write each answer into an `experiments:` entry as you g
 3. **Metric** — the measured quantity and how cells/seeds `reduce` to it. Fix this now;
    choosing the metric *after* seeing data is how findings become artifacts.
 4. **Expected direction** — the predicted result and the theory/literature it rests on.
-   A confirmatory experiment must have one.
+   A confirmatory experiment must have one. **Do not write it before the prior that motivates
+   it is on the table** — pull it from the `litReview/` documents + `PRIORS.md`, and name that
+   prior in the entry. Phrase it as a *prediction*, not a finding: state the direction and its
+   basis; do not quote a specific un-run number as though you had measured it.
 5. **Planned outputs** — the artifact(s) that would show the finding: a `figure`
    (line/bar/heatmap/…), a `table`, a summary stat. This list *is* the plan
    `process_outputs` executes — so specify axes, facets, and the caption's takeaway.
@@ -124,6 +147,12 @@ manage cycle boundaries from inside the session. Within this cycle, add and refi
 experiments freely.
 
 ## 5. When you're done
+
+Before you hand off, check the three non-negotiables actually happened — self-audit, don't wait
+for the user to catch them:
+- [ ] Each confirmatory `expected_direction` was written *after* its prior, and names it.
+- [ ] You showed the user every `resource:`/`workers` choice and they confirmed or overrode it.
+- [ ] Nothing was run, and no un-run number is stated anywhere as a result.
 
 - `experiments.yaml` has one well-formed entry per experiment (valid YAML; every
   confirmatory experiment has a metric, expected_direction, and outputs).
