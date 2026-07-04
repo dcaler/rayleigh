@@ -8,7 +8,9 @@ is trivial (a working folder, not a pushed repo), so one verb both lays down res
 launches the Claude design session.
 """
 
+import fnmatch
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -109,6 +111,35 @@ PRIOR_SOURCES = [
 ]
 
 
+# Heavy dirs a recursive prior-artifact scan must never descend into — a virtualenv or
+# .git sitting inside code/ is tens of thousands of files, and a plain root.glob("**") walks
+# every one of them, stalling `init` for many seconds. os.walk lets us prune them by name.
+_PRUNE_DIRS = {
+    ".venv", "venv", "env", ".git", "__pycache__", "node_modules", "site-packages",
+    ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".ipynb_checkpoints",
+    ".eggs", "build", "dist",
+}
+
+
+def _iter_matches(root: Path, pattern: str):
+    """Yield files under `root` matching a glob `pattern`, pruning _PRUNE_DIRS on the way.
+
+    For non-recursive patterns this is just Path.glob. For a recursive `PREFIX/**/SUFFIX`
+    pattern (SUFFIX a single filename glob, e.g. `code/**/CLAUDE.md`), walk PREFIX with
+    os.walk so heavy directories are skipped instead of crawled."""
+    if "/**/" not in pattern:
+        yield from (p for p in root.glob(pattern) if p.is_file())
+        return
+    prefix, suffix = pattern.split("/**/", 1)
+    base = root / prefix
+    if not base.is_dir():
+        return
+    for dirpath, dirnames, filenames in os.walk(base):
+        dirnames[:] = [d for d in dirnames if d not in _PRUNE_DIRS]
+        for name in fnmatch.filter(filenames, suffix):
+            yield Path(dirpath) / name
+
+
 def discover_priors(root: Path):
     """Find prior ra* artifacts. Returns [(group, [(label, [relpaths]), ...]), ...],
     groups with no matches omitted."""
@@ -116,7 +147,7 @@ def discover_priors(root: Path):
     for group, patterns in PRIOR_SOURCES:
         items = []
         for pattern, label in patterns:
-            matches = sorted(str(p.relative_to(root)) for p in root.glob(pattern)
+            matches = sorted(str(p.relative_to(root)) for p in _iter_matches(root, pattern)
                              if p.is_file())
             if matches:
                 items.append((label, matches))
