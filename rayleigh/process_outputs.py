@@ -193,7 +193,8 @@ def render_figure(df, spec: dict, eid: str, idx: int, figdir: Path):
             log(f"  {eid} fig {idx}: unknown figure type '{ftype}' — skipped")
             plt.close(fig)
             return None
-        ax.set_title(caption, fontsize=9)
+        # No title/caption baked into the image — the PNG/SVG is graphics only; the caption is
+        # carried as text by the report ("Figure N. …") and findings.json.
         fig.tight_layout()
         stem = f"{eid}_{idx}_{_slug(caption)}"
         paths = []
@@ -533,6 +534,32 @@ def _build_docx(path: Path, project, cycle, brief, items, author,
             for kind, name, cap in planned:
                 label = f"{kind}" + (f" — {name}" if name else "")
                 bullet(f"{label}: {cap}" if cap else label)
+
+    # ── Synthesis (collated, not adjudicated) ───────────────────────────────────────
+    doc.add_page_break()
+    doc.add_heading("Synthesis", level=1)
+    n = len(items)
+    conf = sum(1 for it in items if str(it["exp"].get("mode", "confirmatory")) == "confirmatory")
+    tot_data = sum(it["n_data"] for it in items)
+    tot_cells = sum(it["n_cells"] for it in items)
+    doc.add_paragraph(
+        f"This cycle comprises {n} experiment{'s' if n != 1 else ''} "
+        f"({conf} confirmatory, {n - conf} exploratory), {tot_data}/{tot_cells} cells with data. "
+        f"Each finding below is stated against its own preregistration; the findings are brought "
+        f"together here but not adjudicated across experiments.")
+    doc.add_heading("Findings at a glance", level=2)
+    for it in items:
+        exp = it["exp"]
+        p = doc.add_paragraph(style="List Bullet")
+        p.add_run(f"{exp['id']} — {exp.get('title', '')}: ").bold = True
+        p.add_run(it["finding"])
+    deps = [(str(it["exp"]["id"]), it["exp"].get("depends_on"))
+            for it in items if it["exp"].get("depends_on")]
+    if deps:
+        doc.add_paragraph("Design dependencies: "
+                          + "; ".join(f"{a} builds on {b}" for a, b in deps) + ".")
+    italic("Cross-experiment interpretation — reconciling these findings into a single account — "
+           "belongs to the author's write-up (or raconteur); rayleigh reports, it does not conclude.")
 
     # ── Provenance ──────────────────────────────────────────────────────────────────
     doc.add_page_break()
