@@ -23,10 +23,13 @@ import json
 import multiprocessing as mp
 import os
 import re
+import signal
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures.process import BrokenProcessPool
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -86,15 +89,30 @@ def _plan_workers(requested: int) -> tuple[int, str]:
     return effective, " · ".join(parts)
 
 
-# ---- memory guard: MEASURE one cell, then size the pool + cap each worker to fit RAM -------
-# The design session's per-run RAM figure is an estimate; an estimate that's wrong by a few x
-# and fanned out over a wide pool is exactly how a run OOMs the machine. So conduct_exp does not
-# trust the estimate: it runs the first cell alone, measures its real peak footprint, sizes the
-# pool from that vs. actually-available RAM, and puts a hard RLIMIT_AS ceiling under each worker
-# so a runaway cell dies with MemoryError instead of taking the box into swap. This must hold on
-# ANY machine/experiment — the guarantee is enforced here, not assumed from the spec.
-_MEM_SAFETY = 0.75      # commit at most this fraction of *available* RAM to the whole pool
-_HEADROOM = 1.5         # let a cell grow to this multiple of its measured pilot peak
+# ---- memory guard: MEASURE, SIZE the pool, then WATCH real RAM at runtime -------------------
+# The design session's per-run RAM figure is an estimate; an estimate that's wrong by a few x and
+# fanned out over a wide pool is exactly how a run OOMs the machine. So conduct_exp does not trust
+# the estimate. THREE layers, each covering the previous one's blind spot:
+#   1. MEASURE — run the first cell alone, sample its real peak RSS, and size the pool so the
+#      whole pool's expected RSS fits a fraction of available RAM.
+#   2. WATCH — because one pilot cell can under-predict heavier cells (a heterogeneous grid),
+#      a daemon thread samples the *system's* MemAvailable during the run and, if it falls
+#      toward the OOM line, SIGKILLs the largest worker to relieve pressure BEFORE the kernel
+#      OOM-killer (or swap-death) takes the box. The sacrificed cell is restartable (its output
+#      never landed), and the pool is rebuilt with fewer workers to finish the rest.
+#   3. RLIMIT_AS backstop — a *generous, runaway-only* address-space ceiling so a single insane
+#      allocation dies with a clean per-cell MemoryError (pool intact). It is NOT sized tight to
+#      the pilot: VmSize massively over-reserves vs. resident memory (numpy/BLAS/glibc arenas),
+#      so a tight virtual cap false-trips normal cells — real RAM pressure is layer 2's job.
+# The guarantee — a run CAN NOT take the box into OOM — is enforced here at runtime, on measured
+# *resident* memory, not assumed from the spec or from a virtual-size estimate.
+_MEM_SAFETY = 0.75          # commit at most this fraction of *available* RAM to the whole pool
+_HEADROOM = 1.5             # size workers assuming a cell may grow to this multiple of pilot RSS
+_RUNAWAY_AS_MULT = 4.0      # RLIMIT_AS ceiling = this * pilot VmSize (floored at avail RAM): only
+                            #   a cell whose *virtual* size dwarfs the machine is a true runaway
+_MEM_FLOOR_FRAC = 0.08      # watchdog trips when MemAvailable drops below this fraction of the
+_MEM_FLOOR_MIN_GB = 2.0     #   RAM seen at start (or this absolute floor, whichever is larger)
+_WATCH_POLL_S = 0.5         # how often the watchdog samples MemAvailable
 
 
 def _proc_mem_bytes(pid: int) -> tuple[int, int]:
@@ -175,38 +193,43 @@ def _measure_pilot(job: dict) -> tuple[float, float, dict]:
 
 
 def _size_by_memory(peak_rss_gb: float, peak_vsize_gb: float,
-                    machine_workers: int, resource_kind: str) -> tuple[int, int, str]:
-    """From the measured pilot footprint, decide (workers, per-worker RLIMIT_AS bytes, report).
-    workers is chosen so the whole pool's RSS fits the RAM budget; the AS ceiling is the OS-level
-    backstop against a single cell running away. resource=gpu keeps the RSS sizing but sets no AS
-    limit (CUDA reserves huge virtual ranges that a limit would false-trip)."""
+                    machine_workers: int, resource_kind: str) -> tuple[int, int, float, str]:
+    """From the measured pilot footprint, decide (workers, RLIMIT_AS bytes, watchdog floor GiB,
+    report). workers is chosen so the whole pool's *resident* memory fits the RAM budget; the AS
+    ceiling is a generous, runaway-ONLY backstop (see module notes — a tight virtual cap false-
+    trips normal numpy/BLAS cells); the watchdog floor is the MemAvailable level below which the
+    runtime watchdog kills a worker. resource=gpu keeps RSS sizing but sets no AS cap (CUDA
+    reserves huge virtual ranges a cap would false-trip)."""
     avail = _available_ram_gb()
     gpu = str(resource_kind).lower() == "gpu"
     if avail is None:                        # can't see RAM: don't pretend to guarantee anything
-        return machine_workers, 0, (f"RAM unreadable — kept workers={machine_workers}, no cap "
-                                    f"(watch this run for swap)")
+        return machine_workers, 0, 0.0, (f"RAM unreadable — kept workers={machine_workers}, no "
+                                         f"cap/watchdog (watch this run for swap)")
     budget = avail * _MEM_SAFETY
     per_cell = max(peak_rss_gb, 0.01)
     by_mem = max(1, int(budget // (per_cell * _HEADROOM)))
     workers = max(1, _pow2_floor(min(machine_workers, by_mem)))
-    ceiling_gb = max(peak_vsize_gb, peak_rss_gb) * _HEADROOM
-    if workers == 1:
-        ceiling_gb = max(ceiling_gb, budget)       # a lone big cell may use the whole budget
+    # Runaway-only AS ceiling: only a cell whose VIRTUAL size dwarfs the machine is a real
+    # runaway. Floored at the whole available RAM so normal virtual-arena inflation never trips it.
+    ceiling_gb = max(peak_vsize_gb * _RUNAWAY_AS_MULT, avail)
     as_bytes = 0 if gpu else int(ceiling_gb * (1024 ** 3))
+    floor_gb = max(avail * _MEM_FLOOR_FRAC, _MEM_FLOOR_MIN_GB)
     report = (f"pilot peak {peak_rss_gb:.1f} GiB RSS / {peak_vsize_gb:.1f} GiB virt · "
               f"{avail:.0f} GiB avail, budget {budget:.0f} GiB ({int(_MEM_SAFETY * 100)}%) → "
               f"workers {machine_workers}→{workers}")
-    report += (" · resource=gpu, host-RAM sized, no address-space cap" if gpu
-               else f" · per-worker cap {ceiling_gb:.1f} GiB (RLIMIT_AS)")
+    report += (" · resource=gpu, RSS-sized, no address-space cap" if gpu
+               else f" · RLIMIT_AS {ceiling_gb:.0f} GiB (runaway backstop) · "
+                    f"watchdog kills at MemAvailable < {floor_gb:.1f} GiB")
     if workers < machine_workers:
         report += "  [reduced to fit RAM]"
-    return workers, as_bytes, report
+    return workers, as_bytes, floor_gb, report
 
 
 def _limit_address_space(as_bytes: int) -> None:
-    """ProcessPoolExecutor initializer: cap this worker's virtual memory. A cell that exceeds it
-    gets MemoryError/ENOMEM (and any subprocess it spawns inherits the limit) instead of swapping
-    the whole machine. No-op when unset or unsupported."""
+    """ProcessPoolExecutor initializer: cap this worker's virtual memory as a runaway backstop.
+    A cell that exceeds it gets MemoryError/ENOMEM (and any subprocess it spawns inherits the
+    limit) instead of swapping the whole machine. Deliberately generous — real RAM pressure is
+    the watchdog's job, not this cap's. No-op when unset or unsupported."""
     if not as_bytes or as_bytes <= 0:
         return
     try:
@@ -215,6 +238,42 @@ def _limit_address_space(as_bytes: int) -> None:
         R.setrlimit(R.RLIMIT_AS, (int(as_bytes), hard))
     except (ImportError, ValueError, OSError):
         pass
+
+
+def _kill_tree(root_pid: int) -> None:
+    """SIGKILL a worker and every process it spawned (leaf-first)."""
+    for pid in reversed(_proc_tree(root_pid)):
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+
+
+def _rss_watchdog(executor: ProcessPoolExecutor, floor_gb: float,
+                  stop_evt: threading.Event, killed: list) -> None:
+    """Daemon thread: the RUNTIME box-protector. Samples the system's MemAvailable; if it falls
+    below `floor_gb`, SIGKILLs the single largest worker subtree to relieve pressure before the
+    kernel OOM-killer (or swap-death) hits. Records the kill so the caller rebuilds the pool with
+    fewer workers and retries the sacrificed cell (its output never landed → restartable).
+
+    Cheap in the common case: it only reads /proc/meminfo each tick and does the (heavier)
+    per-worker tree walk when memory is already at the floor."""
+    while not stop_evt.wait(_WATCH_POLL_S):
+        avail = _available_ram_gb()
+        if avail is None or avail >= floor_gb:
+            continue
+        procs = list(getattr(executor, "_processes", {}) or {})   # worker root pids
+        if not procs:
+            continue
+        victim = max(procs, key=lambda pid: _tree_mem_bytes(pid)[0])
+        rss_gb = _tree_mem_bytes(victim)[0] / (1024 ** 3)
+        _kill_tree(victim)
+        killed.append(victim)
+        log(f"memory watchdog: MemAvailable {avail:.1f} GiB < floor {floor_gb:.1f} GiB — killed "
+            f"worker pid {victim} (~{rss_gb:.1f} GiB RSS) to protect the box; its cell will retry.")
+        # give the OS a moment to reclaim before the next sample, so we don't over-kill one dip
+        if stop_evt.wait(_WATCH_POLL_S):
+            return
 
 
 def add_import_paths(*dirs) -> None:
@@ -318,10 +377,22 @@ def resolve_cell_outputs(adapter: dict, results: Path, eid: str, cell: dict) -> 
 
 
 # --------------------------------------------------------------------- execution
+def _partial(final: Path) -> Path:
+    """The temp path a cell writes to before its atomic rename to `final`. Keeps `final`'s
+    extension so extension-sniffing writers/loaders still see the right type."""
+    return final.with_name(f"{final.stem}.partial{final.suffix}")
+
+
 def _execute_cell(job: dict) -> dict:
     """Run one cell. Top-level so it is picklable for ProcessPoolExecutor.
-    A cell may write several named artifacts (job["outputs"] = {name: path})."""
+    A cell may write several named artifacts (job["outputs"] = {name: path}).
+
+    ATOMIC: the adapter writes to `.partial` temp paths; only after ALL of them exist does
+    rayleigh rename them into place. So a cell killed mid-write (e.g. by the memory watchdog)
+    leaves only orphan `.partial` files — the final path never appears, so restart re-runs the
+    cell and process_outputs never ingests a truncated file. A cell is 'done' iff its finals exist."""
     outs = {n: Path(p) for n, p in job["outputs"].items()}
+    tmps = {n: _partial(p) for n, p in outs.items()}
     primary = next(iter(outs.values()))
     for p in outs.values():
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -337,15 +408,17 @@ def _execute_cell(job: dict) -> dict:
             fn = getattr(importlib.import_module(mod_name), fn_name)
             if job["multi"]:                     # outputs: mapping -> callable(params, seed, outputs)
                 fn(params=job["params"], seed=job["seed"],
-                   outputs={n: str(p) for n, p in outs.items()})
+                   outputs={n: str(p) for n, p in tmps.items()})
             else:                                # single output_template -> callable(params, seed, output)
-                fn(params=job["params"], seed=job["seed"], output=str(primary))
+                fn(params=job["params"], seed=job["seed"], output=str(tmps["output"]
+                   if "output" in tmps else next(iter(tmps.values()))))
         elif job["kind"] == "subprocess":
             cfg_path = Path(job["config_path"])
             cfg_path.parent.mkdir(parents=True, exist_ok=True)
             cfg_path.write_text(json.dumps({**job["params"], "seed": job["seed"]}, indent=2))
-            subs = {"config": str(cfg_path), "out": str(primary), "seed": job["seed"],
-                    **job["params"], **{f"out_{n}": str(p) for n, p in outs.items()}}
+            primary_tmp = next(iter(tmps.values()))
+            subs = {"config": str(cfg_path), "out": str(primary_tmp), "seed": job["seed"],
+                    **job["params"], **{f"out_{n}": str(p) for n, p in tmps.items()}}
             cmd = job["command"].format(**subs)
             r = subprocess.run(cmd, shell=True, capture_output=True, text=True,
                                cwd=job.get("cwd"))
@@ -354,12 +427,19 @@ def _execute_cell(job: dict) -> dict:
         else:
             raise ValueError(f"unknown run_adapter kind '{job['kind']}' (use import|subprocess)")
 
-        missing = [str(p) for p in outs.values() if not p.exists()]
+        missing = [str(t) for t in tmps.values() if not t.exists()]
         if missing:
             raise RuntimeError(f"entrypoint returned but wrote no output at {', '.join(missing)}")
+        for n, tmp in tmps.items():              # publish atomically (same dir -> rename is atomic)
+            os.replace(tmp, outs[n])
         _write_provenance(job, outs, primary)
         return {"output": str(primary), "status": "done", "error": None}
     except Exception as e:                       # noqa: BLE001 — report, don't crash the pool
+        for t in tmps.values():                  # don't leave partials from a failed run lying around
+            try:
+                t.unlink()
+            except OSError:
+                pass
         return {"output": str(primary), "status": "failed", "error": f"{type(e).__name__}: {e}"}
 
 
@@ -490,15 +570,17 @@ def run_conduct_exp(args) -> int:
     mem_guard = not getattr(args, "no_mem_guard", False)
     resource_kind = exp.get("resource", "cpu")
     as_ceiling = 0
+    watch_floor = 0.0
     run_jobs = jobs
 
     # MEASURE before fanning out: run the first cell alone, size the pool from its real footprint,
-    # and derive the per-worker RAM ceiling. This is what keeps a wide pool from OOM-ing the box.
+    # and derive the runaway backstop + watchdog floor. This is what keeps a wide pool from OOM-ing
+    # the box (see the memory-guard module notes for the three layers).
     if mem_guard:
         peak_rss, peak_vsize, pilot_res = _measure_pilot(jobs[0])
         results_out.append(pilot_res)
         run_jobs = jobs[1:]
-        workers, as_ceiling, size_report = _size_by_memory(
+        workers, as_ceiling, watch_floor, size_report = _size_by_memory(
             peak_rss, peak_vsize, workers, resource_kind)
         log(f"memory guard: {size_report}")
         if pilot_res["status"] == "failed":
@@ -512,16 +594,70 @@ def run_conduct_exp(args) -> int:
         results_out += [_execute_cell(j) for j in run_jobs]     # in-process: easiest to debug
     else:
         # Route even the serial (workers==1) guarded case through the pool so the RLIMIT_AS
-        # ceiling lands on a *worker*, never on rayleigh's own process.
-        with ProcessPoolExecutor(max_workers=max(1, workers),
-                                 initializer=_limit_address_space,
-                                 initargs=(as_ceiling,)) as ex:
-            futs = [ex.submit(_execute_cell, j) for j in run_jobs]
-            for f in as_completed(futs):
-                results_out.append(f.result())
+        # ceiling lands on a *worker*, never on rayleigh's own process. The watchdog may SIGKILL a
+        # worker under memory pressure — that breaks the pool — so we run in a loop: whatever cells
+        # didn't land (restartable by output-existence) are retried with a HALVED pool until they
+        # finish or a single cell can't fit even alone.
+        remaining = run_jobs
+        cur_workers = max(1, workers)
+        attempt = 0
+        gpu = str(resource_kind).lower() == "gpu"
+        while remaining:
+            attempt += 1
+            before = len(remaining)
+            stop_evt = threading.Event()
+            killed: list = []
+            with ProcessPoolExecutor(max_workers=cur_workers,
+                                     initializer=_limit_address_space,
+                                     initargs=(as_ceiling,)) as ex:
+                watcher = None
+                if mem_guard and watch_floor > 0 and not gpu:
+                    watcher = threading.Thread(
+                        target=_rss_watchdog, args=(ex, watch_floor, stop_evt, killed), daemon=True)
+                    watcher.start()
+                futs = [ex.submit(_execute_cell, j) for j in remaining]
+                try:
+                    for f in as_completed(futs):
+                        results_out.append(f.result())
+                except BrokenProcessPool:
+                    log("memory watchdog broke the pool after a kill — completed cells are saved; "
+                        "rebuilding to finish the rest.")
+                finally:
+                    stop_evt.set()
+                    if watcher is not None:
+                        watcher.join(timeout=2)
+            # Restartable: recompute what still lacks output. Killed / interrupted cells reappear.
+            remaining = [j for j in remaining
+                         if not all(Path(p).exists() for p in j["outputs"].values())]
+            if killed and cur_workers > 1:
+                cur_workers = max(1, cur_workers // 2)     # relieve pressure on the retry
+                log(f"memory watchdog: retrying {len(remaining)} cell(s) with {cur_workers} worker(s).")
+            elif remaining and len(remaining) == before:
+                # No progress this pass and we can't narrow further — one cell won't fit. Stop
+                # rather than loop forever; mark the rest failed so the run reports honestly.
+                log(f"memory guard: {len(remaining)} cell(s) can't fit even at {cur_workers} "
+                    f"worker(s) — giving up on them (see --no-mem-guard to override).")
+                for j in remaining:
+                    primary = next(iter(j["outputs"].values()))
+                    results_out.append({"output": str(primary), "status": "failed",
+                                        "error": "MemoryError: cell exceeds RAM budget under the guard"})
+                break
 
-    failed = [r for r in results_out if r["status"] == "failed"]
-    ran = len(results_out) - len(failed)
+    # Accounting is EXISTENCE-based (a cell succeeded iff its outputs are on disk): a watchdog kill
+    # can drop a completed future's result before we read it, but the data is what's true.
+    guarded_jobs = jobs if not mem_guard else jobs[1:]
+    errors = {r["output"]: r.get("error") for r in results_out if r["status"] == "failed"}
+    ran, failed = 0, []
+    checklist = list(guarded_jobs)
+    if mem_guard:
+        checklist = [jobs[0]] + checklist            # include the pilot cell
+    for j in checklist:
+        primary = str(next(iter(j["outputs"].values())))
+        if all(Path(p).exists() for p in j["outputs"].values()):
+            ran += 1
+        else:
+            failed.append({"output": primary,
+                           "error": errors.get(primary, "no output (killed or errored)")})
     log(f"done: {ran} succeeded, {len(failed)} failed, {done_already} skipped (pre-existing).")
     for r in failed[:10]:
         log(f"  FAIL {Path(r['output']).name}: {r['error']}")

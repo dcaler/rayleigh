@@ -75,10 +75,13 @@ experiments:
     workers: 8                     # INTENDED parallel cells for THIS experiment (upper bound).
                                    #   Set <= cores, a power of two (8/16/32…). conduct_exp then
                                    #   pilot-measures the first cell's RAM and LOWERS this if the
-                                   #   pool wouldn't fit usable RAM, and caps each worker with a
-                                   #   hard memory ceiling (a runaway cell dies, the box doesn't
-                                   #   swap). So this is intent, not a safety guarantee — the
-                                   #   runtime enforces the fit. GPU: size to VRAM (often 1-few).
+                                   #   pool wouldn't fit usable RAM. At RUNTIME a watchdog samples
+                                   #   free memory and, if a heavier-than-pilot cell pushes the box
+                                   #   toward OOM, kills the biggest worker and retries it with a
+                                   #   halved pool (outputs are written atomically, so a killed cell
+                                   #   just re-runs — no half-written data). So this is intent, not a
+                                   #   safety number — the runtime enforces the fit and the box can't
+                                   #   OOM. GPU: size to VRAM (often 1-few).
                                    #   (Disable the guard with `conduct_exp --no-mem-guard`.)
     # seeds: 64                    # optional: override the design's seeds for this experiment
     # budget_hours: 2              # optional: trundlr scheduling window for `rayleigh queue`
