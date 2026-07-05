@@ -323,43 +323,225 @@ def _build_findings(project, cycle, brief, items, results: Path) -> str:
     return json.dumps(doc, indent=2)
 
 
-def _build_docx(path: Path, project, cycle, brief, items, author) -> bool:
+def _methods_lines(exp: dict) -> list:
+    """Human-readable Method bullets: design, fixed params, replications, metric(s)."""
+    design = exp.get("design") or {}
+    lines = []
+    kind = design.get("kind", "sweep")
+    axes = design.get("axes") or {}
+    if axes:
+        lines.append("Design: " + kind + " over " + "; ".join(
+            f"{k} ∈ {{{', '.join(str(x) for x in v)}}}" for k, v in axes.items()))
+    elif design.get("conditions"):
+        lines.append(f"Design: {kind} · {len(design['conditions'])} named conditions")
+    else:
+        lines.append(f"Design: {kind}")
+    fixed = exp.get("fixed") or {}
+    if fixed:
+        lines.append("Fixed parameters: " + ", ".join(f"{k} = {v}" for k, v in fixed.items()))
+    seeds = exp.get("seeds", design.get("seeds"))
+    if seeds:
+        lines.append(f"Replications: {seeds} seeds per cell")
+    metric = exp.get("metric") or {}
+    if metric.get("name"):
+        reduce = str(metric.get("reduce", "")).strip()
+        lines.append(f"Primary metric — {metric['name']}" + (f": {reduce}" if reduce else ""))
+    for sm in (metric.get("secondary") or []):
+        if sm.get("name"):
+            r = str(sm.get("reduce", "")).strip()
+            lines.append(f"Secondary — {sm['name']}" + (f": {r}" if r else ""))
+    return lines
+
+
+def _metric_summary_lines(exp: dict, df, param_cols: list, metric_cols: list) -> list:
+    """Per-metric range and where the extremes sit over the swept axes — the quantitative
+    backbone of the Results prose. Preregistered metric first."""
+    if df is None or df.empty or not metric_cols:
+        return []
+    primary = (exp.get("metric") or {}).get("name")
+    ordered = ([primary] if primary in metric_cols else []) + \
+              [m for m in metric_cols if m != primary]
+    # locate extremes over the axes that actually VARY (a fixed/constant param adds no signal)
+    gcols = [c for c in param_cols if df[c].nunique() > 1] or param_cols
+
+    def _loc(idx) -> str:
+        vals = idx if isinstance(idx, tuple) else (idx,)
+        return ", ".join(f"{k}={v}" for k, v in zip(gcols, vals))
+
+    lines = []
+    for m in ordered[:8]:
+        try:
+            s = df.groupby(gcols)[m].mean() if gcols else df[m]
+            mn, mx = float(s.min()), float(s.max())
+        except Exception:                                # noqa: BLE001
+            continue
+        span = f"{m}: {mn:.3g} to {mx:.3g}"
+        if gcols and hasattr(s, "idxmin") and len(s) > 1 and mn != mx:
+            span += f"  (lowest at {_loc(s.idxmin())}; highest at {_loc(s.idxmax())})"
+        lines.append(span)
+    return lines
+
+
+def _unrendered_outputs(exp: dict) -> list:
+    """Preregistered outputs rayleigh can't draw itself (artifact / stat / …), so the report
+    names them rather than letting a planned deliverable silently vanish."""
+    out = []
+    for o in exp.get("outputs") or []:
+        if o.get("kind") in ("figure", "table"):
+            continue
+        out.append((o.get("kind") or "output", o.get("name") or "",
+                    str(o.get("caption") or "").strip()))
+    return out
+
+
+def _code_sha_from_provenance(results: Path) -> str | None:
+    """Best-effort code SHA for the provenance footer: read the first cell's .prov.json."""
+    data = results / "data"
+    if not data.is_dir():
+        return None
+    for p in data.rglob("*.prov.json"):
+        try:
+            return json.loads(p.read_text()).get("code_sha")
+        except Exception:                                # noqa: BLE001
+            return None
+    return None
+
+
+def _build_docx(path: Path, project, cycle, brief, items, author,
+                generated: datetime, code_sha: str | None) -> bool:
+    """The human deliverable: a full, self-contained report — title page, an executive summary
+    across experiments, then one complete section per experiment (question, method, the
+    preregistration, results prose + metric ranges, embedded numbered figures/tables, and any
+    planned artifacts rayleigh couldn't draw), closing with provenance."""
     try:
         from docx import Document
-        from docx.shared import Inches
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from docx.shared import Inches, Pt
     except ImportError:
         return False
+
+    def italic(text, size=None):
+        p = doc.add_paragraph()
+        r = p.add_run(text)
+        r.italic = True
+        if size:
+            r.font.size = Pt(size)
+        return p
+
+    def bullet(text):
+        doc.add_paragraph(text, style="List Bullet")
+
     doc = Document()
     doc.core_properties.author = author
-    doc.add_heading(f"{project} — Results (cycle {cycle})", 0)
+
+    # ── Title page ──────────────────────────────────────────────────────────────────
+    doc.add_heading(f"{project}", 0)
+    st = doc.add_paragraph()
+    st.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    r = st.add_run(f"Results — research cycle {cycle}")
+    r.bold = True
+    sub = doc.add_paragraph()
+    sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    sub.add_run(f"Generated {generated:%Y-%m-%d}").italic = True
     if brief:
-        doc.add_paragraph(brief)
+        doc.add_heading("Overview", level=1)
+        doc.add_paragraph(brief.strip())
+
+    # ── Executive summary across experiments ────────────────────────────────────────
+    if len(items) > 1:
+        doc.add_heading("Summary of experiments", level=1)
+        t = doc.add_table(rows=1, cols=4)
+        t.style = "Table Grid"
+        for j, h in enumerate(("ID", "Experiment", "Mode", "Coverage")):
+            run = t.rows[0].cells[j].paragraphs[0].add_run(h)
+            run.bold = True
+        for it in items:
+            exp = it["exp"]
+            cells = t.add_row().cells
+            cells[0].text = str(exp["id"])
+            cells[1].text = str(exp.get("title", ""))
+            cells[2].text = str(exp.get("mode", "confirmatory"))
+            cells[3].text = f"{it['n_data']}/{it['n_cells']} cells"
+
+    # ── One full section per experiment ─────────────────────────────────────────────
+    fig_no = tab_no = 0
     for it in items:
         exp = it["exp"]
+        doc.add_page_break()
         doc.add_heading(f"{exp['id']} — {exp.get('title', '')}", level=1)
-        doc.add_paragraph(f"Mode: {exp.get('mode', 'confirmatory')} · "
-                          f"{it['n_data']}/{it['n_cells']} cells with data").italic = True
+        italic(f"{str(exp.get('mode', 'confirmatory')).capitalize()} · "
+               f"{it['n_data']}/{it['n_cells']} cells with data")
+
         if exp.get("question"):
-            doc.add_paragraph(f"Question: {exp['question']}")
+            doc.add_heading("Question", level=2)
+            doc.add_paragraph(str(exp["question"]).strip())
+
+        method = _methods_lines(exp)
+        if method:
+            doc.add_heading("Method", level=2)
+            for line in method:
+                bullet(line)
+
+        expected = exp.get("expected_direction")
+        if str(exp.get("mode", "confirmatory")) == "confirmatory" and expected:
+            doc.add_heading("Preregistered expectation", level=2)
+            doc.add_paragraph(str(expected).strip())
+        elif str(exp.get("mode")) == "exploratory":
+            italic("Exploratory experiment — not preregistered; findings are hypothesis-generating.")
+
+        doc.add_heading("Results", level=2)
         f = doc.add_paragraph()
         f.add_run("Finding: ").bold = True
         f.add_run(it["finding"])
+        for line in _metric_summary_lines(exp, it.get("df"), it.get("param_cols") or [],
+                                          it.get("metric_cols") or []):
+            bullet(line)
+
         for primary, _all, cap in it["figures"]:
-            doc.add_picture(str(primary), width=Inches(5.5))   # PNG — docx can't embed SVG
-            doc.add_paragraph(cap).italic = True
-        for piv, cap in it["tables"]:
+            fig_no += 1
+            try:
+                doc.add_picture(str(primary), width=Inches(6.0))   # PNG — docx can't embed SVG
+                doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
+            except Exception as e:                       # noqa: BLE001
+                doc.add_paragraph(f"[figure {fig_no} could not be embedded: {e}]")
+            cap_p = doc.add_paragraph()
+            cr = cap_p.add_run(f"Figure {fig_no}. {cap}")
+            cr.italic = True
+            cr.font.size = Pt(9)
+
+        for k, (piv, cap) in enumerate(it["tables"]):
+            tab_no += 1
             t = doc.add_table(rows=1, cols=len(piv.columns) + 1)
             t.style = "Table Grid"
             hdr = t.rows[0].cells
-            hdr[0].text = str(piv.index.name or "")
+            hdr[0].paragraphs[0].add_run(str(piv.index.name or "")).bold = True
             for j, c in enumerate(piv.columns):
-                hdr[j + 1].text = str(c)
+                hdr[j + 1].paragraphs[0].add_run(str(c)).bold = True
             for idx, row in piv.iterrows():
                 cells = t.add_row().cells
                 cells[0].text = str(idx)
                 for j, v in enumerate(row):
                     cells[j + 1].text = _fmt(v)
-            doc.add_paragraph(cap).italic = True
+            cap_p = doc.add_paragraph()
+            cr = cap_p.add_run(f"Table {tab_no}. {cap}")
+            cr.italic = True
+            cr.font.size = Pt(9)
+
+        planned = _unrendered_outputs(exp)
+        if planned:
+            doc.add_heading("Planned outputs (produced outside this report)", level=2)
+            for kind, name, cap in planned:
+                label = f"{kind}" + (f" — {name}" if name else "")
+                bullet(f"{label}: {cap}" if cap else label)
+
+    # ── Provenance ──────────────────────────────────────────────────────────────────
+    doc.add_page_break()
+    doc.add_heading("Provenance", level=1)
+    bullet(f"Generated by rayleigh {__version__} on {generated:%Y-%m-%d %H:%M UTC}.")
+    if code_sha and code_sha != "unknown":
+        bullet(f"Analysis code at commit {code_sha}.")
+    bullet("Figures also written as SVG (vector) alongside the embedded PNGs; per-cell numbers "
+           "in results/tables/*.csv and results/findings.json.")
     doc.save(str(path))
     return True
 
@@ -414,7 +596,8 @@ def run_process_outputs(args) -> int:
         if df.empty:
             log(f"{eid}: no cell data yet — run `rayleigh conduct_exp {eid}` first")
             items.append({"exp": exp, "finding": "No data collected yet.", "figures": [],
-                          "tables": [], "table_files": [], "n_data": 0, "n_cells": n_cells})
+                          "tables": [], "table_files": [], "n_data": 0, "n_cells": n_cells,
+                          "df": df, "param_cols": param_cols, "metric_cols": metric_cols})
             continue
         figs, tables, table_files = [], [], []
         for i, o in enumerate(exp.get("outputs") or []):
@@ -442,7 +625,8 @@ def run_process_outputs(args) -> int:
         log(f"{eid}: {len(df)}/{n_cells} cells · {len(figs)} figure(s), {len(tables)} table(s)")
         items.append({"exp": exp, "finding": finding_text(exp, df), "figures": figs,
                       "tables": tables, "table_files": table_files,
-                      "n_data": len(df), "n_cells": n_cells})
+                      "n_data": len(df), "n_cells": n_cells,
+                      "df": df, "param_cols": param_cols, "metric_cols": metric_cols})
     if dry:
         return 0
 
@@ -459,7 +643,8 @@ def run_process_outputs(args) -> int:
         log("--no-docx: skipped the .docx (RESULTS.md written)")
         return 0
     docx_name = f"{cycle}_{project}_results_{cfg.tool_initials}.docx"
-    if _build_docx(results / docx_name, project, cycle, brief, items, cfg.author_name):
+    if _build_docx(results / docx_name, project, cycle, brief, items, cfg.author_name,
+                   datetime.now(timezone.utc), _code_sha_from_provenance(results)):
         log(f"wrote results/{docx_name}")
     else:
         log("python-docx unavailable — wrote RESULTS.md only "
