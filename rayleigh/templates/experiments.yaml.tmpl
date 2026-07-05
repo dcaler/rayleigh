@@ -47,6 +47,16 @@ code:
   #   Default (no adapter): JSON dict of scalars, or numeric column means of parquet/csv;
   #   with several artifacts, metric keys are prefixed by name (e.g. `summary.rmse`, `timeseries.peak`).
 
+  # analysis_r:                    # OPTIONAL — run YOUR OWN R script instead of the generated one.
+  #   "analysis/custom.R"          #   Path (relative to results/). rayleigh still writes the tidy
+  #                                #   data to analysis/data/<E>.csv; your script reads it and writes
+  #                                #   figures (<E>_*.png/.pdf) + tables/stats (<E>_*.csv) by the same
+  #                                #   naming convention so the report can collect them.
+  # NOTE: process_outputs does NOT compute analytical products itself — it generates a base-R +
+  # ggplot2 script (results/analysis/<E>.R) from the `outputs:` below and runs it. The script + the
+  # tidy data are durable: `Rscript results/analysis/<E>.R` regenerates every figure/table/stat any
+  # time, independently of rayleigh. (Machines running process_outputs need R + ggplot2 installed.)
+
 # ── PER-EXPERIMENT (a list; add one block per experiment) ────────────────────────────
 experiments:
   # ---- EXAMPLE experiment — replace with the real ones during the init session ----
@@ -92,8 +102,10 @@ experiments:
 
     expected_direction: "(the predicted result and its theoretical basis)"
 
-    outputs:                       # PREREGISTERED — planned here, rendered by process_outputs.
-                                   # A list: a finding may be a figure, a table, a stat, ...
+    outputs:                       # PREREGISTERED — planned here, then GENERATED IN R by
+                                   # process_outputs (ggplot2 figures; base-R tables/stats/regressions).
+                                   # A list: a finding may be a figure, a table, a regression, a stat…
+                                   # (A per-metric summary-statistics table is always produced too.)
       - kind: figure
         type: line                 # line | bar | heatmap | scatter | ...
         x: param_b
@@ -113,3 +125,11 @@ experiments:
       #   cols: param_b
       #   cell: (metric)
       #   caption: "..."
+      # REGRESSION — fit in R (lm, or glm when `family:` is set); coefficients + SE/t/p -> a CSV:
+      # - kind: regression
+      #   name: (short_id)
+      #   formula: "(metric) ~ param_a + param_b"   # a base-R model formula, used verbatim
+      #   family: binomial         # OPTIONAL — set to use glm(..., family=...) instead of lm()
+      #   caption: "..."
+      # `stat` / `artifact` kinds rayleigh can't derive from cell data — it names them in the
+      # report; produce them in an adapter helper (or your `analysis_r` script) and reference them.

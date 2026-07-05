@@ -10,10 +10,12 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "PyYAML>=6",
-    "pandas>=1.3",       # process_outputs: tidy cell table + aggregation
-    "matplotlib>=3.4",   # process_outputs: figures
+    "pandas>=1.3",       # process_outputs: tidy cell table; reads R's CSV outputs for the report
     "python-docx>=0.8",  # process_outputs: the .docx write-up (degrades if absent)
 ]
+# EXTERNAL (non-Python) requirement: process_outputs generates + runs a base-R + ggplot2 analysis
+# script (rayleigh.r_analysis). Machines that run it need R with ggplot2 installed. Without R,
+# process_outputs still writes the tidy data + the .R script (re-run when R is available).
 
 [project.scripts]
 rayleigh = "rayleigh.cli:main"

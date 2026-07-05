@@ -1,10 +1,13 @@
 """`rayleigh process_outputs` — reduce cell data into an experiment's preregistered
 outputs, findings, and the datestamped .docx write-up.
 
-For each experiment: re-expand its cells (the same expansion conduct_exp ran), load each
-cell's output into a tidy table, aggregate over seeds, render the outputs planned during
-`init` (figures via matplotlib, tables via pivot), and state an honest finding — the
-observed summary next to the preregistered `expected_direction`, honoring
+rayleigh does NOT compute the analytical products itself. For each experiment it re-expands its
+cells (the same expansion conduct_exp ran), loads each cell's output into a tidy table, and writes
+that table plus a **base R + ggplot2** script (see rayleigh.r_analysis) that produces every figure,
+table, summary statistic, and regression. `process_outputs` runs the script and then ASSEMBLES the
+report around what R produced. The script + data are durable: `Rscript results/analysis/<E>.R`
+regenerates every analytical product at any time, independently of rayleigh. The finding is stated
+honestly — the R-computed observed summary next to the preregistered `expected_direction`, honoring
 `mode: confirmatory | exploratory`. No auto-verdict gate; honesty lives in the wording.
 
 Reading a cell's output(s) uses a loader (a cell may write several artifacts):
@@ -16,17 +19,16 @@ Reading a cell's output(s) uses a loader (a cell may write several artifacts):
 Deliverables, two audiences:
   - for raconteur (its load_results ingests results/ *.md / *.json / *.csv): `RESULTS.md`
     (prose), `findings.json` (structured per-experiment: prereg + observed finding + artifact
-    pointers), and `tables/*.csv` (the aggregated numbers). This is rayleigh's reason to exist.
+    pointers), and `tables/*.csv` (the R-computed numbers). This is rayleigh's reason to exist.
   - for the human: `results/{cycle}_{project}_results_{ra}.docx` (the ra/DCR review cycle;
     python-docx, degrades to RESULTS.md if unavailable).
 
-Every figure is rendered to `results/figures/` in both PNG (embeds in the .docx / markdown
-preview) and SVG (vector, for publication); findings.json lists all formats per figure.
+Every figure is written by R to `results/figures/` as PNG (embeds in the .docx / markdown preview)
+and PDF (vector, for publication); findings.json lists both formats per figure.
 """
 
 import importlib
 import json
-import re
 import sys
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -35,15 +37,11 @@ import yaml
 
 from rayleigh import __version__
 from rayleigh.conduct_exp import expand_cells, resolve_cell_outputs, add_import_paths  # reuse cell logic
+from rayleigh.r_analysis import analyze as r_analyze
 
 
 def log(msg: str) -> None:
     print(f"[rayleigh process_outputs] {msg}", flush=True)
-
-
-# Every figure is emitted in each format: PNG (embeds in the .docx / RESULTS.md preview) and
-# SVG (vector, for publication). findings.json lists all of them per figure.
-FIGURE_FORMATS = ("png", "svg")
 
 
 # --------------------------------------------------------------------- loading cells
@@ -131,128 +129,35 @@ def build_table(exp: dict, adapter: dict, results: Path, loader):
     return df, param_cols, metric_cols, missing
 
 
-# --------------------------------------------------------------------- rendering
-def _slug(s: str) -> str:
-    return re.sub(r"[^A-Za-z0-9]+", "-", str(s)).strip("-").lower()[:50] or "out"
-
-
-def render_figure(df, spec: dict, eid: str, idx: int, figdir: Path):
-    """Render one planned figure to results/figures/, in every configured format.
-    Returns (primary_path, [all_paths], caption) or None. The primary (PNG) embeds in the
-    .docx and RESULTS.md; the vector formats (SVG) are for publication."""
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    ftype = spec.get("type", "line")
-    x, y = spec.get("x"), spec.get("y")
-    caption = spec.get("caption") or f"{y} vs {x}"
+# --------------------------------------------------------------------- finding (from R output)
+def _observed_from_summary(exp: dict, summary_df) -> str:
+    """Transcribe the primary metric's R-computed range for the finding sentence — a READING of
+    R's summary-statistics output, not a Python computation (all stats live in the R script)."""
+    if summary_df is None or getattr(summary_df, "empty", True):
+        return "data collected; see the figures and the R summary-statistics table"
+    primary = (exp.get("metric") or {}).get("name")
     try:
-        fig, ax = plt.subplots(figsize=(6, 4))
-        if ftype in ("line", "scatter"):
-            if x not in df.columns or y not in df.columns:
-                log(f"  {eid} fig {idx}: x='{x}'/y='{y}' not in data — skipped")
-                plt.close(fig)
-                return None
-            facet = spec.get("facet")
-            groups = df.groupby(facet) if facet and facet in df.columns else [(None, df)]
-            for fval, sub in groups:
-                label = f"{facet}={fval}" if facet else None
-                if ftype == "line":
-                    g = sub.groupby(x)[y].agg(["mean", "std"]).reset_index().sort_values(x)
-                    ax.errorbar(g[x], g["mean"], yerr=g["std"].fillna(0),
-                                marker="o", capsize=3, label=label)
-                else:
-                    ax.scatter(sub[x], sub[y], alpha=0.6, label=label)
-            ax.set_xlabel(x); ax.set_ylabel(y)
-            if spec.get("facet"):
-                ax.legend(title=spec["facet"])
-        elif ftype == "bar":
-            g = df.groupby(x)[y].mean().reset_index()
-            ax.bar(g[x].astype(str), g[y]); ax.set_xlabel(x); ax.set_ylabel(y)
-        elif ftype == "heatmap":
-            # A heatmap's colour axis is its THIRD field: `z` (conventional) or `value`.
-            # It must be a metric, not one of the plane's axes — pivoting with values==index
-            # is what raises the cryptic "Grouper for '<axis>' not 1-dimensional".
-            val = spec.get("z") or spec.get("value")
-            if not val or val in (x, y):
-                log(f"  {eid} fig {idx}: heatmap needs a `z:` (or `value:`) metric distinct "
-                    f"from x='{x}'/y='{y}' — got {val!r}; skipped")
-                plt.close(fig)
-                return None
-            if val not in df.columns:
-                log(f"  {eid} fig {idx}: heatmap z='{val}' not in data — skipped")
-                plt.close(fig)
-                return None
-            piv = df.pivot_table(index=y, columns=x, values=val, aggfunc="mean")
-            im = ax.imshow(piv.values, aspect="auto", origin="lower")
-            ax.set_xticks(range(len(piv.columns))); ax.set_xticklabels(piv.columns)
-            ax.set_yticks(range(len(piv.index))); ax.set_yticklabels(piv.index)
-            ax.set_xlabel(x); ax.set_ylabel(y); fig.colorbar(im, ax=ax, label=val)
+        if primary is not None and primary in summary_df.index:
+            row = summary_df.loc[primary]
         else:
-            log(f"  {eid} fig {idx}: unknown figure type '{ftype}' — skipped")
-            plt.close(fig)
-            return None
-        # No title/caption baked into the image — the PNG/SVG is graphics only; the caption is
-        # carried as text by the report ("Figure N. …") and findings.json.
-        fig.tight_layout()
-        stem = f"{eid}_{idx}_{_slug(caption)}"
-        paths = []
-        for fmt in FIGURE_FORMATS:                       # PNG (docx/preview) + SVG (vector)
-            p = figdir / f"{stem}.{fmt}"
-            fig.savefig(p, dpi=120, bbox_inches="tight")
-            paths.append(p)
-        plt.close(fig)
-        primary = next((p for p in paths if p.suffix == ".png"), paths[0])
-        return primary, paths, caption
-    except Exception as e:                           # noqa: BLE001
-        log(f"  {eid} fig {idx}: render failed ({type(e).__name__}: {e}) — skipped")
-        return None
-
-
-def render_table(df, spec: dict, eid: str):
-    """Pivot one planned table. Returns (pivot_df, caption) or None."""
-    rows, cols, cell = spec.get("rows"), spec.get("cols"), spec.get("cell")
-    caption = spec.get("caption") or f"{cell} by {rows} × {cols}"
-    try:
-        piv = df.pivot_table(index=rows, columns=cols, values=cell, aggfunc="mean")
-        return piv, caption
-    except Exception as e:                           # noqa: BLE001
-        log(f"  {eid} table: pivot failed ({type(e).__name__}: {e}) — skipped")
-        return None
-
-
-def _observed_summary(exp: dict, df) -> str:
-    outs = exp.get("outputs") or []
-    x = y = None
-    for o in outs:
-        if o.get("kind") != "figure" or not o.get("x"):
-            continue
-        # summarize the plotted METRIC vs x: a heatmap's metric is `z`/`value`, otherwise `y`.
-        x = o["x"]
-        y = o.get("z") or o.get("value") or o.get("y")
-        break
-    if not (x and y) or x not in df.columns or y not in df.columns:
-        return "data collected; no single x/y trend to summarize automatically"
-    try:
-        g = df.groupby(x)[y].mean().sort_index()
-        lo, hi = g.index[0], g.index[-1]
-        a, b = float(g.iloc[0]), float(g.iloc[-1])
-        trend = "rises" if b > a else "falls" if b < a else "is flat"
-        return f"{y} {trend} from {a:.3g} at {x}={lo} to {b:.3g} at {x}={hi}"
+            primary, row = str(summary_df.index[0]), summary_df.iloc[0]
+        return (f"{primary} ranged {float(row['min']):.3g}–{float(row['max']):.3g} "
+                f"(mean {float(row['mean']):.3g}) across the sweep; see the figures")
     except Exception:                                # noqa: BLE001
-        return "data collected; trend not auto-summarizable"
+        return "data collected; see the figures and the R summary-statistics table"
 
 
-def finding_text(exp: dict, df) -> str:
-    """An honest finding: observed summary next to the prereg, honoring mode. No verdict gate."""
+def finding_text(exp: dict, summary_df) -> str:
+    """An honest finding: the R-computed observed summary next to the prereg, honoring mode."""
     mode = exp.get("mode", "confirmatory")
-    obs = _observed_summary(exp, df)
+    obs = _observed_from_summary(exp, summary_df)
     if mode == "exploratory":
         return f"Exploratory (not preregistered). Observed: {obs}."
     expected = exp.get("expected_direction")
     prefix = f"Expected (preregistered): {expected}. " if expected else ""
     return f"{prefix}Observed: {obs}."
+
+
 
 
 # --------------------------------------------------------------------- assembly
@@ -320,6 +225,10 @@ def _build_findings(project, cycle, brief, items, results: Path) -> str:
                         for primary, all_paths, c in it["figures"]],
             "tables": [{"path": str(p.relative_to(results)), "caption": c}
                        for p, c in it.get("table_files", [])],
+            "analysis": ({"script": str(Path(a["script"]).relative_to(results)),
+                          "data": str(Path(a["data"]).relative_to(results)),
+                          "engine": "R (base + ggplot2)", "ran": a.get("ran"), "ok": a.get("ok")}
+                         if (a := it.get("analysis")) else None),
         })
     return json.dumps(doc, indent=2)
 
@@ -351,35 +260,6 @@ def _methods_lines(exp: dict) -> list:
         if sm.get("name"):
             r = str(sm.get("reduce", "")).strip()
             lines.append(f"Secondary — {sm['name']}" + (f": {r}" if r else ""))
-    return lines
-
-
-def _metric_summary_lines(exp: dict, df, param_cols: list, metric_cols: list) -> list:
-    """Per-metric range and where the extremes sit over the swept axes — the quantitative
-    backbone of the Results prose. Preregistered metric first."""
-    if df is None or df.empty or not metric_cols:
-        return []
-    primary = (exp.get("metric") or {}).get("name")
-    ordered = ([primary] if primary in metric_cols else []) + \
-              [m for m in metric_cols if m != primary]
-    # locate extremes over the axes that actually VARY (a fixed/constant param adds no signal)
-    gcols = [c for c in param_cols if df[c].nunique() > 1] or param_cols
-
-    def _loc(idx) -> str:
-        vals = idx if isinstance(idx, tuple) else (idx,)
-        return ", ".join(f"{k}={v}" for k, v in zip(gcols, vals))
-
-    lines = []
-    for m in ordered[:8]:
-        try:
-            s = df.groupby(gcols)[m].mean() if gcols else df[m]
-            mn, mx = float(s.min()), float(s.max())
-        except Exception:                                # noqa: BLE001
-            continue
-        span = f"{m}: {mn:.3g} to {mx:.3g}"
-        if gcols and hasattr(s, "idxmin") and len(s) > 1 and mn != mx:
-            span += f"  (lowest at {_loc(s.idxmin())}; highest at {_loc(s.idxmax())})"
-        lines.append(span)
     return lines
 
 
@@ -494,9 +374,11 @@ def _build_docx(path: Path, project, cycle, brief, items, author,
         f = doc.add_paragraph()
         f.add_run("Finding: ").bold = True
         f.add_run(it["finding"])
-        for line in _metric_summary_lines(exp, it.get("df"), it.get("param_cols") or [],
-                                          it.get("metric_cols") or []):
-            bullet(line)
+        an = it.get("analysis") or {}
+        if an.get("script") is not None:
+            italic(f"Analytical products generated by results/analysis/{Path(an['script']).name} "
+                   f"(base R + ggplot2) — re-run `Rscript results/analysis/{Path(an['script']).name}` "
+                   f"to regenerate.")
 
         for primary, _all, cap in it["figures"]:
             fig_no += 1
@@ -566,9 +448,16 @@ def _build_docx(path: Path, project, cycle, brief, items, author,
     doc.add_heading("Provenance", level=1)
     bullet(f"Generated by rayleigh {__version__} on {generated:%Y-%m-%d %H:%M UTC}.")
     if code_sha and code_sha != "unknown":
-        bullet(f"Analysis code at commit {code_sha}.")
-    bullet("Figures also written as SVG (vector) alongside the embedded PNGs; per-cell numbers "
-           "in results/tables/*.csv and results/findings.json.")
+        bullet(f"Model/analysis code at commit {code_sha}.")
+    scripts = [Path(it["analysis"]["script"]).name for it in items
+               if (it.get("analysis") or {}).get("script")]
+    if scripts:
+        bullet("Every figure, table, and statistic was generated by base R + ggplot2, not by "
+               "rayleigh — regenerate any time with: "
+               + "; ".join(f"Rscript results/analysis/{s}" for s in sorted(set(scripts))) + ".")
+    bullet("Tidy per-cell data in results/analysis/data/*.csv; figures as PNG + PDF in "
+           "results/figures/; table/stat CSVs in results/tables/ and results/analysis/stats/; "
+           "structured findings in results/findings.json.")
     doc.save(str(path))
     return True
 
@@ -605,10 +494,7 @@ def run_process_outputs(args) -> int:
 
     from rayleigh.config import load_config
     cfg = load_config()
-    figdir = results / "figures"
-    figdir.mkdir(parents=True, exist_ok=True)
-    tabledir = results / "tables"
-    loader = _get_loader(spec, code_dir, results)
+    loader = _get_loader(spec, code_dir, results)   # figures/tables dirs are created by r_analysis
 
     dry = getattr(args, "dry_run", False)
     items = []
@@ -624,36 +510,27 @@ def run_process_outputs(args) -> int:
             log(f"{eid}: no cell data yet — run `rayleigh conduct_exp {eid}` first")
             items.append({"exp": exp, "finding": "No data collected yet.", "figures": [],
                           "tables": [], "table_files": [], "n_data": 0, "n_cells": n_cells,
-                          "df": df, "param_cols": param_cols, "metric_cols": metric_cols})
+                          "analysis": None})
             continue
-        figs, tables, table_files = [], [], []
-        for i, o in enumerate(exp.get("outputs") or []):
-            if o.get("kind") == "figure":
-                r = render_figure(df, o, eid, i, figdir)
-                if r:
-                    figs.append(r)   # (primary_png, [all_format_paths], caption)
-            elif o.get("kind") == "table":
-                r = render_table(df, o, eid)
-                if r:
-                    piv, cap = r
-                    tables.append(r)
-                    tabledir.mkdir(parents=True, exist_ok=True)  # CSV so raconteur gets the numbers
-                    csv_path = tabledir / f"{eid}_{i}_{_slug(cap)}.csv"
-                    piv.to_csv(csv_path)
-                    table_files.append((csv_path, cap))
-            else:
-                # A preregistered output rayleigh can't render itself (e.g. `artifact`, `stat`).
-                # Don't drop it silently — say so, so a planned deliverable never just vanishes.
-                kind = o.get("kind") or "(no kind)"
-                name = o.get("name") or o.get("caption") or ""
-                log(f"  {eid} out {i}: output kind '{kind}' not rendered by process_outputs"
-                    f"{f' ({name[:50]})' if name else ''} — produce it from the stored data "
-                    f"(e.g. an adapter helper), then reference it in the write-up")
-        log(f"{eid}: {len(df)}/{n_cells} cells · {len(figs)} figure(s), {len(tables)} table(s)")
-        items.append({"exp": exp, "finding": finding_text(exp, df), "figures": figs,
-                      "tables": tables, "table_files": table_files,
-                      "n_data": len(df), "n_cells": n_cells,
-                      "df": df, "param_cols": param_cols, "metric_cols": metric_cols})
+
+        # rayleigh doesn't render the analytical products — it writes the tidy data + a base-R
+        # script and runs it. The report is assembled from whatever R produced.
+        res = r_analyze(eid, exp, df, param_cols, metric_cols, results, custom_r=code.get("analysis_r"))
+        if not res["ran"]:
+            log(f"  {eid}: {res['log']} — wrote data + results/analysis/{eid}.R; install R + "
+                f"ggplot2 and re-run `Rscript results/analysis/{eid}.R` to render.")
+        elif not res["ok"]:
+            log(f"  {eid}: R analysis reported an error (outputs may be partial):\n{res['log']}")
+        for note, name, cap in res["unrendered"]:
+            log(f"  {eid}: output '{note}'{f' ({name})' if name else ''} isn't derivable from cell "
+                f"data — name it in the write-up (or add a `regression:`/adapter helper).")
+        log(f"{eid}: {len(df)}/{n_cells} cells · {len(res['figures'])} figure(s), "
+            f"{len(res['tables'])} table(s) via R{'' if res['ok'] else ' [R incomplete]'}")
+        items.append({"exp": exp, "finding": finding_text(exp, res["summary_df"]),
+                      "figures": res["figures"], "tables": res["tables"],
+                      "table_files": res["table_files"], "n_data": len(df), "n_cells": n_cells,
+                      "analysis": {"script": res["script"], "data": res["data"],
+                                   "ran": res["ran"], "ok": res["ok"]}})
     if dry:
         return 0
 
