@@ -1,4 +1,4 @@
-"""rayleigh CLI — `rayleigh <init|conduct_exp|process_outputs>`."""
+"""rayleigh CLI — `rayleigh <init|conduct_exp|process_outputs|review|queue>`."""
 
 import argparse
 
@@ -49,6 +49,13 @@ def build_parser() -> argparse.ArgumentParser:
     process.add_argument("--dry-run", action="store_true",
                          help="report data availability + planned outputs; render nothing")
 
+    review = sub.add_parser(
+        "review",
+        help="human-led review gate after process_outputs (an interactive human+Claude session)")
+    _common(review)
+    review.add_argument("--no-launch", action="store_true",
+                        help="scaffold REVIEW.md only; print the checklist path instead of launching claude")
+
     queue = sub.add_parser("queue",
                            help="linearize experiments.yaml -> submit the trundlr run chain")
     _common(queue)
@@ -69,6 +76,9 @@ def main(argv=None) -> int:
     if args.cmd == "process_outputs":
         from rayleigh.process_outputs import run_process_outputs
         return run_process_outputs(args)
+    if args.cmd == "review":
+        from rayleigh.review import run_review
+        return run_review(args)
     if args.cmd == "queue":
         from rayleigh.queue import run_queue
         return run_queue(args)

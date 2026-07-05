@@ -668,6 +668,7 @@ def run_process_outputs(args) -> int:
 
     if getattr(args, "no_docx", False):
         log("--no-docx: skipped the .docx (RESULTS.md written)")
+        log("next: `rayleigh review` — the human-led review of this report before the cycle closes.")
         return 0
     docx_name = f"{cycle}_{project}_results_{cfg.tool_initials}.docx"
     if _build_docx(results / docx_name, project, cycle, brief, items, cfg.author_name,
@@ -676,4 +677,5 @@ def run_process_outputs(args) -> int:
     else:
         log("python-docx unavailable — wrote RESULTS.md only "
             "(pip install python-docx for the .docx deliverable)")
+    log("next: `rayleigh review` — the human-led review of this report before the cycle closes.")
     return 0
