@@ -27,7 +27,11 @@ DESIGN_PROMPT = (
     "conversation, not a form-filler. Read results/designdocs/PLANNING.md and follow it. First "
     "read results/designdocs/PRIORS.md — the index of what the earlier ra* tools left (the "
     "raster-built code/, the rabbitHole litReview/, the raconteur paper/) — and the artifacts it "
-    "points to. Then run the INTAKE with me: the brief in results/rayleigh.yaml may be thin or "
+    "points to. If PRIORS.md indexes a prior REVIEW.md (the human's verdicts from last cycle's "
+    "`rayleigh review`), read it FIRST and treat it as the mandate for this redesign — its "
+    "per-experiment verdicts and next actions are my own account of what diverged last cycle and "
+    "what to change; open the redesign from them rather than from a blank slate. "
+    "Then run the INTAKE with me: the brief in results/rayleigh.yaml may be thin or "
     "empty, so (grounded in the priors) ask me what I want to find out this cycle and draw it out "
     "in discussion. From that + the priors, propose a starting experiment design, refine it with "
     "me, and write the finalized brief into results/rayleigh.yaml plus "
@@ -95,6 +99,15 @@ def archive_cycle(results: Path, prior_cycle: str) -> None:
 # project. `init` indexes it so the design session can PROPOSE a starting experiment set
 # instead of a blank skeleton. (group -> [(glob, what-it-gives-you)])
 PRIOR_SOURCES = [
+    # The prior rayleigh cycle's OWN feedback — listed first because on a re-init (a `re-init`
+    # verdict from `rayleigh review`) it is the mandate for the redesign: the human's account of
+    # what diverged and what to change. On `--new-cycle` the prior REVIEW.md has just been archived
+    # (archive_cycle runs before this scan), so glob both the live and archived locations.
+    ("Prior rayleigh cycle (review + report)", [
+        ("results/designdocs/REVIEW.md", "last review — the human's per-experiment verdicts + next actions (WHY re-init)"),
+        ("results/archive/*/designdocs/REVIEW.md", "archived reviews from earlier cycles"),
+        ("results/RESULTS.md", "last cycle's report — what was found"),
+    ]),
     ("Model / codebase (raster)", [
         ("code/raster.yaml", "build config — the project brief + package"),
         ("code/README.md", "what the codebase is"),

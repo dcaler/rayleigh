@@ -80,6 +80,11 @@ design = "opus"
 api_url      = "http://100.87.86.57:8251"
 gpu_resource = 2             # conduct_exp for GPU-accelerated models
 cpu_resource = 3             # conduct_exp for CPU-bound sims, and always process_outputs
+# human_resource = 1         # OPTIONAL — YOUR trundlr resource id. When `rayleigh review`
+                             # queues the follow-on chain (conduct_exp/process_outputs), it
+                             # ends with a command-less `review` task on this resource so the
+                             # next review lands in your queue. Unset -> the chain still
+                             # queues; rayleigh just prints "re-run review when it completes".
 """
 
 
@@ -97,6 +102,7 @@ class Config:
     trundlr_api: str = "http://100.87.86.57:8251"
     gpu_resource: int = 2
     cpu_resource: int = 3
+    human_resource: int = 0          # 0 = unset (no human review-gate task queued)
 
 
 def load_config(create: bool = True) -> Config:
@@ -122,6 +128,7 @@ def load_config(create: bool = True) -> Config:
         trundlr_api=t.get("api_url", Config.trundlr_api),
         gpu_resource=int(t.get("gpu_resource", Config.gpu_resource)),
         cpu_resource=int(t.get("cpu_resource", Config.cpu_resource)),
+        human_resource=int(t.get("human_resource", Config.human_resource) or 0),
     )
     cfg.trundlr_api = os.environ.get("RAYLEIGH_TRUNDLR_API", cfg.trundlr_api)
     return cfg

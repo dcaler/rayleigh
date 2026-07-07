@@ -38,6 +38,7 @@ import yaml
 from rayleigh import __version__
 from rayleigh.conduct_exp import expand_cells, resolve_cell_outputs, add_import_paths  # reuse cell logic
 from rayleigh.r_analysis import analyze as r_analyze
+from rayleigh.spec import active_spec_path
 
 
 def log(msg: str) -> None:
@@ -94,16 +95,30 @@ def _get_loader(spec: dict, code_dir: Path, results: Path):
 
 
 def _param_keys(exp: dict) -> list:
+    """Parameter column names for this experiment (constants + swept/drawn params) — the rest of
+    the tidy table's columns are metrics. Covers sweep (axes), conditions, and sobol (categorical
+    + continuous); `fixed:` may sit at the experiment or design level."""
     design = exp.get("design") or {}
-    fixed = list((exp.get("fixed") or {}).keys())      # constants are params, not metrics
-    if design.get("kind") == "conditions":
-        keys = list(fixed)
-        for c in design.get("conditions") or []:
-            for k in c:
+    keys: list = []
+
+    def add(src):
+        if isinstance(src, dict):
+            for k in src:
                 if k not in keys:
                     keys.append(k)
-        return keys
-    return fixed + [k for k in (design.get("axes") or {}).keys() if k not in fixed]
+
+    add(design.get("fixed"))
+    add(exp.get("fixed"))                               # constants are params, not metrics
+    kind = str(design.get("kind", "sweep"))
+    if kind == "conditions":
+        for c in design.get("conditions") or []:
+            add(c)
+    elif kind == "sobol":
+        add(design.get("categorical"))
+        add(design.get("continuous"))
+    else:                                              # sweep
+        add(design.get("axes"))
+    return keys
 
 
 def build_table(exp: dict, adapter: dict, results: Path, loader):
@@ -466,7 +481,7 @@ def _build_docx(path: Path, project, cycle, brief, items, author,
 def run_process_outputs(args) -> int:
     root = Path(args.dir).resolve() if getattr(args, "dir", None) else Path.cwd()
     results = root / "results"
-    spec_path = results / "designdocs" / "experiments.yaml"
+    spec_path = active_spec_path(results / "designdocs")
     if not spec_path.is_file():
         log(f"no {spec_path} — run `rayleigh init` first")
         return 1

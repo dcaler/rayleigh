@@ -36,6 +36,7 @@ from pathlib import Path
 import yaml
 
 from rayleigh import __version__
+from rayleigh.spec import active_spec_path
 
 DEFAULT_WORKERS = 8
 DEFAULT_TEMPLATE = "data/{experiment}/{cellkey}_seed{seed}.parquet"
@@ -287,7 +288,7 @@ def add_import_paths(*dirs) -> None:
 
 # --------------------------------------------------------------------- spec + cells
 def _load_spec(results: Path) -> dict:
-    spec_path = results / "designdocs" / "experiments.yaml"
+    spec_path = active_spec_path(results / "designdocs")
     if not spec_path.is_file():
         raise FileNotFoundError(
             f"no {spec_path} — run `rayleigh init` and design experiments first")
@@ -317,7 +318,8 @@ def _cellkey(params: dict) -> str:
 
 
 def _param_combos(design: dict) -> list[dict]:
-    """The parameter side of the design (before seeds), as a list of param dicts."""
+    """The DISCRETE parameter side of the design (before seeds), as a list of param dicts.
+    (Continuous `sobol` designs are expanded separately by `_sobol_combos`.)"""
     kind = design.get("kind", "sweep")
     if kind == "sweep":
         axes = design.get("axes") or {}
@@ -329,29 +331,107 @@ def _param_combos(design: dict) -> list[dict]:
         conds = design.get("conditions") or []
         return [dict(c) for c in conds]
     raise NotImplementedError(
-        f"design.kind '{kind}' is not yet supported by conduct_exp — use 'sweep' or "
-        "'conditions' (oat/ablation are planned).")
+        f"design.kind '{kind}' is not yet supported by conduct_exp — use 'sweep', "
+        "'conditions', or 'sobol' (oat/ablation are planned).")
+
+
+def _sobol_points(n_draws: int, dims: list, scramble: bool = True, seed: int = 0) -> list[dict]:
+    """`n_draws` points in the continuous box `dims` = [(name, (lo, hi)), …], as param dicts.
+
+    Scrambled Sobol (randomized quasi-Monte-Carlo — low-discrepancy, space-filling) via scipy
+    when present; a numpy Latin-Hypercube fallback otherwise. Both are DETERMINISTIC in `seed`,
+    so conduct_exp and process_outputs regenerate the identical point set (the cell<->params map
+    must be stable across runs)."""
+    d = len(dims)
+    los = [b[0] for _, b in dims]
+    his = [b[1] for _, b in dims]
+    try:
+        import warnings
+        from scipy.stats import qmc
+        with warnings.catch_warnings():                  # n_draws need not be a power of two
+            warnings.simplefilter("ignore")
+            unit = qmc.Sobol(d=d, scramble=scramble, seed=seed).random(n_draws)
+            scaled = qmc.scale(unit, los, his)
+        return [{dims[j][0]: float(scaled[i][j]) for j in range(d)} for i in range(n_draws)]
+    except Exception as e:                               # noqa: BLE001  (scipy absent / mismatch)
+        import numpy as np
+        log(f"scipy Sobol unavailable ({type(e).__name__}) — using a numpy Latin-Hypercube fallback")
+        rng = np.random.default_rng(seed)
+        u = (np.arange(n_draws)[:, None] + rng.random((n_draws, d))) / n_draws   # stratified
+        for j in range(d):
+            rng.shuffle(u[:, j])
+        return [{dims[j][0]: float(los[j] + u[i][j] * (his[j] - los[j])) for j in range(d)}
+                for i in range(n_draws)]
+
+
+def _sobol_combos(design: dict) -> list[tuple]:
+    """Expand a `kind: sobol` design to [(params, cellkey_tag), …]: `n_draws` continuous points
+    (shared across categorical arms, so draw j is comparable across arms) x the Cartesian product
+    of `categorical:`. The cellkey is `<categorical>_dNNNN` — the draw index keeps continuous
+    cells unique and short (the exact float params live in the tidy data, regenerated identically)."""
+    cont = design.get("continuous") or {}
+    if not cont:
+        raise ValueError("sobol design needs a `continuous:` box, e.g. {size_frac: {min: 0, max: 1}}")
+    dims = []
+    for name, b in cont.items():
+        if isinstance(b, dict):
+            lo, hi = b.get("min"), b.get("max")
+        elif isinstance(b, (list, tuple)) and len(b) == 2:
+            lo, hi = b
+        else:
+            raise ValueError(f"continuous param {name!r} needs {{min, max}} or [lo, hi], got {b!r}")
+        dims.append((name, (float(lo), float(hi))))
+    n_draws = int(design.get("n_draws", 256))
+    scramble = str(design.get("sampler", "sobol_scrambled")).lower() != "sobol"   # 'sobol' -> unscrambled
+    pts = _sobol_points(n_draws, dims, scramble=scramble, seed=int(design.get("sampler_seed", 0)))
+    cats = design.get("categorical") or {}
+    if cats:
+        keys = list(cats)
+        cat_combos = [dict(zip(keys, c)) for c in itertools.product(*(cats[k] for k in keys))]
+    else:
+        cat_combos = [{}]
+    out = []
+    for cat in cat_combos:
+        ck = _cellkey(cat)
+        for j, pt in enumerate(pts):
+            tag = (f"{ck}_" if ck != "cell" else "") + f"d{j:04d}"
+            out.append(({**cat, **pt}, tag))
+    return out
 
 
 def expand_cells(exp: dict, adapter: dict) -> list[dict]:
-    """Expand an experiment into cells: [{params, seed}, ...].
+    """Expand an experiment into cells: [{params, seed, cellkey}, ...].
 
     `fixed:` (a dict of constant params) is merged into every cell — the way to pin a
     parameter across a whole experiment that isn't a swept axis (e.g. an arm selector
     `mode: monkey` shared by every cell of a grid). A swept axis of the same name wins."""
     design = exp.get("design") or {}
-    combos = _param_combos(design)
-    fixed = exp.get("fixed") or {}
-    if fixed and not isinstance(fixed, dict):
-        raise ValueError(f"experiment {exp.get('id')}: `fixed` must be a mapping, got {fixed!r}")
-    if fixed:
-        combos = [{**fixed, **combo} for combo in combos]     # swept axis overrides a fixed key
+    if str(design.get("kind", "sweep")) == "sobol":
+        combos = _sobol_combos(design)                    # [(params, keytag), …]
+    else:
+        combos = [(p, None) for p in _param_combos(design)]
+    # `fixed:` constants may sit at the experiment level or inside `design:` — accept both
+    # (design-level is a natural home for a design constant). Experiment-level wins on a clash;
+    # a swept/drawn param wins over either.
+    fixed = {}
+    for src in (design.get("fixed"), exp.get("fixed")):
+        if src is None:
+            continue
+        if not isinstance(src, dict):
+            raise ValueError(f"experiment {exp.get('id')}: `fixed` must be a mapping, got {src!r}")
+        fixed.update(src)
     seeds = exp.get("seeds", design.get("seeds", 1))
     try:
         n_seeds = int(seeds)
     except (TypeError, ValueError):
         raise ValueError(f"experiment {exp.get('id')}: `seeds` must be an integer, got {seeds!r}")
-    return [{"params": p, "seed": s} for p in combos for s in range(n_seeds)]
+    cells = []
+    for params, keytag in combos:
+        p = {**fixed, **params} if fixed else dict(params)   # swept/drawn param overrides a fixed key
+        key = keytag or _cellkey(p)
+        for s in range(n_seeds):
+            cells.append({"params": p, "seed": s, "cellkey": key})
+    return cells
 
 
 def resolve_cell_outputs(adapter: dict, results: Path, eid: str, cell: dict) -> dict:
@@ -363,7 +443,7 @@ def resolve_cell_outputs(adapter: dict, results: Path, eid: str, cell: dict) -> 
     """
     outs = adapter.get("outputs")
     templates = dict(outs) if outs else {"output": adapter.get("output_template") or DEFAULT_TEMPLATE}
-    key = _cellkey(cell["params"])
+    key = cell.get("cellkey") or _cellkey(cell["params"])
     resolved = {}
     for name, tmpl in templates.items():
         try:

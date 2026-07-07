@@ -55,6 +55,11 @@ def build_parser() -> argparse.ArgumentParser:
     _common(review)
     review.add_argument("--no-launch", action="store_true",
                         help="scaffold REVIEW.md only; print the checklist path instead of launching claude")
+    review.add_argument("--no-queue", action="store_true",
+                        help="after the session, print the fold-forward plan but submit nothing to trundlr")
+    review.add_argument("--yes", action="store_true",
+                        help="submit the fold-forward chain without the confirmation prompt")
+    review.add_argument("--exec-cmd", help="command the trundlr runner invokes (default: rayleigh)")
 
     queue = sub.add_parser("queue",
                            help="linearize experiments.yaml -> submit the trundlr run chain")

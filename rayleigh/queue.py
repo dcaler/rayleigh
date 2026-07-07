@@ -19,6 +19,7 @@ import yaml
 
 from rayleigh import trundlr
 from rayleigh.config import load_config
+from rayleigh.spec import active_spec_path
 
 DEFAULT_CONDUCT_HOURS = 1.0
 DEFAULT_PROCESS_HOURS = 0.5
@@ -77,7 +78,7 @@ def linearize(spec: dict, exec_cmd: str, resources: dict) -> list:
 def run_queue(args) -> int:
     root = Path(args.dir).resolve() if getattr(args, "dir", None) else Path.cwd()
     results = root / "results"
-    spec_path = results / "designdocs" / "experiments.yaml"
+    spec_path = active_spec_path(results / "designdocs")
     if not spec_path.is_file():
         log(f"no {spec_path} — run `rayleigh init` first")
         return 1

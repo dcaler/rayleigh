@@ -143,16 +143,180 @@ tryCatch({
 }, error=function(e) message("rayleigh: regression $I failed: ", conditionMessage(e)))
 """)
 
+# ── continuous-design helpers (LOESS surfaces, contours, bootstrap bands) ─────────────
+# A base-R + ggplot2 toolkit for `sobol`/continuous experiments: fit a LOESS surface/curve to
+# the scattered draws, predict on a grid, and render phase diagrams, difference maps, and
+# smoothed lines with bootstrap CIs. Raw string (normal R `$`), injected once per script;
+# `__PARAMCOLS__` is the parameter-column vector (for auto-locating a categorical selector).
+_HELPERS = r"""
+# ---- rayleigh continuous-analysis helpers (base R + ggplot2) ----------------
+.PARAMCOLS <- __PARAMCOLS__
+.num <- function(x) suppressWarnings(as.numeric(x))
+.rng <- function(x){ x <- x[is.finite(x)]; if (length(x) < 2) c(0, 1) else range(x) }
+# the parameter column that holds a given categorical value (e.g. which col has "BCERT")
+.selcol <- function(df, val){
+  for (cc in .PARAMCOLS) if (cc %in% names(df) && val %in% unique(as.character(df[[cc]]))) return(cc)
+  NA_character_
+}
+# LOESS surface val ~ x*y predicted on an ngrid x ngrid box over the observed range
+.loess_grid <- function(df, xc, yc, zc, ngrid=55, span=0.75){
+  s <- data.frame(cx=.num(df[[xc]]), cy=.num(df[[yc]]), val=.num(df[[zc]]))
+  s <- s[is.finite(s$cx) & is.finite(s$cy) & is.finite(s$val), ]
+  if (nrow(s) < 8) stop("too few finite points for a surface")
+  fit <- tryCatch(loess(val ~ cx * cy, data=s, span=span, degree=1,
+                        control=loess.control(surface="direct")),
+                  error=function(e) loess(val ~ cx + cy, data=s, span=span, degree=1,
+                        control=loess.control(surface="direct")))
+  gx <- seq(.rng(s$cx)[1], .rng(s$cx)[2], length.out=ngrid)
+  gy <- seq(.rng(s$cy)[1], .rng(s$cy)[2], length.out=ngrid)
+  g <- expand.grid(cx=gx, cy=gy); g$val <- as.numeric(predict(fit, g)); g
+}
+# bootstrap contour lines (resample rows -> refit -> extract contours) for a CI envelope
+.boot_contours <- function(df, xc, yc, zc, levels, B=30, ngrid=45, span=0.75){
+  out <- list()
+  for (b in seq_len(B)){
+    g <- tryCatch(.loess_grid(df[sample(nrow(df), replace=TRUE), , drop=FALSE], xc, yc, zc, ngrid, span),
+                  error=function(e) NULL)
+    if (is.null(g)) next
+    gx <- sort(unique(g$cx)); gy <- sort(unique(g$cy))
+    z <- matrix(g$val, nrow=length(gx))
+    for (cl in contourLines(gx, gy, z, levels=levels))
+      out[[length(out)+1]] <- data.frame(cx=cl$x, cy=cl$y, grp=paste0(b, "_", length(out)))
+  }
+  if (length(out)) do.call(rbind, out) else NULL
+}
+.save2 <- function(p, png, pdf){
+  ggsave(file.path(FIG, png), p, width=6.2, height=4.4, dpi=120)
+  ggsave(file.path(FIG, pdf), p, width=6.2, height=4.4)
+}
+# phase diagram: LOESS surface of `zc` over (xc, yc); optional scenario filter, contours (+boot CI), diverging scale
+.save_surface <- function(df, xc, yc, zc, selval, contours, diverging, bootB, png, pdf, lx, ly, lz){
+  d2 <- df
+  if (nzchar(selval)){ sc <- .selcol(df, selval); if (!is.na(sc)) d2 <- df[as.character(df[[sc]]) == selval, , drop=FALSE] }
+  g <- .loess_grid(d2, xc, yc, zc)
+  p <- ggplot(g, aes(cx, cy, fill=val)) + geom_raster(interpolate=TRUE)
+  p <- p + (if (isTRUE(diverging)) scale_fill_gradient2(low="#2166ac", mid="#f7f7f7", high="#b2182b", midpoint=0)
+            else scale_fill_viridis_c())
+  if (length(contours)){
+    if (bootB > 0){ bc <- .boot_contours(d2, xc, yc, zc, contours)
+      if (!is.null(bc)) p <- p + geom_path(data=bc, aes(cx, cy, group=grp), inherit.aes=FALSE,
+                                            colour="black", alpha=0.10, linewidth=0.3) }
+    p <- p + geom_contour(aes(z=val), breaks=contours, colour="black", linewidth=0.5)
+  }
+  p <- p + labs(x=lx, y=ly, fill=lz) + theme_minimal()
+  .save2(p, png, pdf)
+}
+# difference phase map: LOESS surface(labA) - surface(labB) of `metric` over (xc, yc), diverging, zero/contour lines
+.save_diff <- function(df, xc, yc, metric, labA, labB, contours, bootB, png, pdf, lx, ly, lz){
+  sc <- .selcol(df, labA); if (is.na(sc)) stop(paste("no parameter column holds", labA))
+  gA <- .loess_grid(df[as.character(df[[sc]]) == labA, , drop=FALSE], xc, yc, metric)
+  gB <- .loess_grid(df[as.character(df[[sc]]) == labB, , drop=FALSE], xc, yc, metric)
+  g <- gA; g$val <- gA$val - gB$val
+  p <- ggplot(g, aes(cx, cy, fill=val)) + geom_raster(interpolate=TRUE) +
+       scale_fill_gradient2(low="#2166ac", mid="#f7f7f7", high="#b2182b", midpoint=0)
+  if (length(contours)) p <- p + geom_contour(aes(z=val), breaks=contours, colour="black", linewidth=0.5)
+  p <- p + labs(x=lx, y=ly, fill=lz) + theme_minimal()
+  .save2(p, png, pdf)
+}
+# smoothed line of `yc` vs `xc` (per `series`), with a bootstrap CI band and optional hlines
+.save_line <- function(df, xc, yc, series, hlines, bootB, png, pdf, lx, ly, ls){
+  mk <- function(sub){
+    s <- data.frame(cx=.num(sub[[xc]]), val=.num(sub[[yc]]))
+    s <- s[is.finite(s$cx) & is.finite(s$val), ]
+    if (nrow(s) < 5) stop("too few points for a line")
+    gx <- seq(.rng(s$cx)[1], .rng(s$cx)[2], length.out=120)
+    fit <- loess(val ~ cx, data=s, span=0.75, degree=2)
+    pr <- as.numeric(predict(fit, data.frame(cx=gx)))
+    lo <- rep(NA_real_, length(gx)); hi <- lo
+    if (bootB > 0){
+      M <- matrix(NA_real_, bootB, length(gx))
+      for (b in seq_len(bootB)){
+        fb <- tryCatch(loess(val ~ cx, data=s[sample(nrow(s), replace=TRUE), , drop=FALSE], span=0.75, degree=2),
+                       error=function(e) NULL)
+        if (!is.null(fb)) M[b, ] <- as.numeric(predict(fb, data.frame(cx=gx)))
+      }
+      lo <- apply(M, 2, quantile, 0.05, na.rm=TRUE); hi <- apply(M, 2, quantile, 0.95, na.rm=TRUE)
+    }
+    data.frame(cx=gx, val=pr, lo=lo, hi=hi)
+  }
+  if (nzchar(series) && series %in% names(df)){
+    parts <- list()
+    for (lv in unique(as.character(df[[series]]))){
+      gg <- tryCatch(mk(df[as.character(df[[series]]) == lv, , drop=FALSE]), error=function(e) NULL)
+      if (!is.null(gg)){ gg$grp <- lv; parts[[length(parts)+1]] <- gg }
+    }
+    g <- do.call(rbind, parts)
+    p <- ggplot(g, aes(cx, val, colour=grp, fill=grp))
+    if (bootB > 0) p <- p + geom_ribbon(aes(ymin=lo, ymax=hi), alpha=0.15, colour=NA)
+    p <- p + geom_line(linewidth=0.7) + labs(colour=ls, fill=ls)
+  } else {
+    g <- mk(df); p <- ggplot(g, aes(cx, val))
+    if (bootB > 0) p <- p + geom_ribbon(aes(ymin=lo, ymax=hi), alpha=0.15)
+    p <- p + geom_line(linewidth=0.7)
+  }
+  if (length(hlines)) p <- p + geom_hline(yintercept=hlines, linetype="dashed", colour="grey40")
+  .save2(p + labs(x=lx, y=ly) + theme_minimal(), png, pdf)
+}
+"""
+
+_FIG_SURFACE = Template("""
+# ---- figure $I: LOESS phase diagram ($Z over $X x $Y) ----
+tryCatch(.save_surface(d, "$X", "$Y", "$Z", "$SEL", $CONTOURS, $DIVERGING, $BOOTB,
+                       "$PNG", "$PDF", $RX, $RY, $RZ),
+  error=function(e) message("rayleigh: figure $I (surface) failed: ", conditionMessage(e)))
+""")
+
+_FIG_DIFF = Template("""
+# ---- figure $I: difference phase map ($METRIC: $LABA - $LABB over $X x $Y) ----
+tryCatch(.save_diff(d, "$X", "$Y", "$METRIC", "$LABA", "$LABB", $CONTOURS, $BOOTB,
+                    "$PNG", "$PDF", $RX, $RY, $RZ),
+  error=function(e) message("rayleigh: figure $I (diff) failed: ", conditionMessage(e)))
+""")
+
+_FIG_LINE_SMOOTH = Template("""
+# ---- figure $I: LOESS line ($Y vs $X$SERIES_NOTE) ----
+tryCatch(.save_line(d, "$X", "$Y", "$SERIES", $HLINES, $BOOTB, "$PNG", "$PDF", $RX, $RY, $RS),
+  error=function(e) message("rayleigh: figure $I (line) failed: ", conditionMessage(e)))
+""")
+
+
+def _rnums(xs) -> str:
+    """R numeric vector literal from a list of numbers (empty -> numeric(0))."""
+    xs = xs or []
+    return "c(" + ", ".join(repr(float(x)) for x in xs) + ")" if xs else "numeric(0)"
+
+
+_DIFF_RE = re.compile(r"\s*(\w+)\s*\[\s*([^\]]+?)\s*\]\s*-\s*\w+\s*\[\s*([^\]]+?)\s*\]\s*$")
+
 
 def _figure_block(o, i, x, y, png, pdf):
     ftype = o.get("type", "line")
     rx, ry = _rs(x or ""), _rs(y or "")
     common = dict(I=i, X=x, Y=y, RX=rx, RY=ry, PNG=png, PDF=pdf)
+    smooth = str(o.get("smooth") or "").lower()
+    bootB = 30 if str(o.get("contour_ci") or o.get("band") or "").lower().startswith("boot") else 0
+
+    if ftype == "heatmap_diff":                          # difference of two scenario surfaces
+        m = _DIFF_RE.match(str(o.get("z") or ""))
+        if not m:
+            return None, f"heatmap_diff needs z like 'metric[A] - metric[B]' (got {o.get('z')!r})"
+        metric, a, b = m.group(1), m.group(2), m.group(3)
+        return _FIG_DIFF.substitute(METRIC=metric, LABA=a, LABB=b, CONTOURS=_rnums(o.get("contours")),
+                                    BOOTB=bootB, RZ=_rs(f"{metric} ({a}-{b})"), **common), None
     if ftype == "heatmap":
         z = o.get("z") or o.get("value")
         if not z or z in (x, y):
             return None, f"heatmap needs a `z:` metric distinct from x/y (got {z!r})"
+        if smooth == "loess" or o.get("contours") or o.get("z_scenario") or o.get("diverging"):
+            return _FIG_SURFACE.substitute(
+                Z=z, RZ=_rs(z), SEL=str(o.get("z_scenario") or ""), CONTOURS=_rnums(o.get("contours")),
+                DIVERGING="TRUE" if o.get("diverging") else "FALSE", BOOTB=bootB, **common), None
         return _FIG_HEATMAP.substitute(Z=z, RZ=_rs(z), **common), None
+    if ftype == "line" and (smooth == "loess" or o.get("band") or o.get("series")):
+        series = o.get("series") or ""
+        return _FIG_LINE_SMOOTH.substitute(
+            SERIES=series, SERIES_NOTE=(f", by {series}" if series else ""),
+            HLINES=_rnums(o.get("hlines")), BOOTB=bootB, RS=_rs(series), **common), None
     if ftype in ("line", "point", "scatter"):
         if ftype == "line":
             facet = o.get("facet")
@@ -168,11 +332,13 @@ def _figure_block(o, i, x, y, png, pdf):
     return None, f"unknown figure type '{ftype}'"
 
 
-def generate_script(eid: str, exp: dict, metric_cols: list, results: Path):
+def generate_script(eid: str, exp: dict, param_cols: list, metric_cols: list, results: Path):
     """Return (script_text, manifest). manifest = ordered list of produced artifacts:
     {kind, idx, caption, name, primary: Path|None, files: [Path], note}."""
     figdir, tabdir, stadir = results / "figures", results / "tables", results / "analysis" / "stats"
     text = _HEADER.substitute(EID=eid, METRICS=_rvec(metric_cols))
+    text += _HELPERS.replace("__PARAMCOLS__", _rvec(param_cols))    # continuous-surface toolkit
+    known = set(param_cols) | set(metric_cols)
     manifest = [{"kind": "summary", "idx": None,
                  "caption": "Summary statistics (per metric, computed in R)", "name": "summary",
                  "primary": stadir / f"{eid}_summary.csv", "files": [stadir / f"{eid}_summary.csv"]}]
@@ -192,6 +358,17 @@ def generate_script(eid: str, exp: dict, metric_cols: list, results: Path):
             manifest.append({"kind": "figure", "idx": i, "caption": cap or f"figure {i}", "name": "",
                              "primary": figdir / png, "files": [figdir / png, figdir / pdf]})
         elif kind == "table":
+            refs = {"cell": o.get("cell"), "rows": o.get("rows"), "cols": o.get("cols")}
+            bad = {k: v for k, v in refs.items()          # a ref must be a single existing column
+                   if v is not None and not (isinstance(v, str) and v in known)}
+            if bad:                                       # references a non-column (e.g. a derived slice)
+                badstr = ", ".join(f"{k}={v!r}" for k, v in bad.items())
+                cols = ", ".join(sorted(known)) or "none"
+                manifest.append({"kind": "skipped", "idx": i, "caption": cap, "name": "",
+                                 "primary": None, "files": [],
+                                 "note": f"table {badstr} is not a data column; needs a code.analysis_r "
+                                         f"script (known columns: {cols})"})
+                continue
             stem = f"{eid}_{i}_{_slug(cap or 'table')}"
             csv = f"{stem}.csv"
             text += _TABLE.substitute(I=i, CELL=o.get("cell"), ROWS=o.get("rows"),
@@ -214,6 +391,13 @@ def generate_script(eid: str, exp: dict, metric_cols: list, results: Path):
             manifest.append({"kind": "regression", "idx": i,
                              "caption": cap or f"Regression: {formula}", "name": name,
                              "primary": stadir / csv, "files": [stadir / csv]})
+        elif kind == "comparison":
+            # cross-dataset overlay (e.g. this cycle vs a prior one) — inherently not derivable
+            # from this experiment's cells alone; author it in a code.analysis_r script.
+            manifest.append({"kind": "unrendered", "idx": i, "caption": cap,
+                             "name": o.get("name") or o.get("against") or "",
+                             "primary": None, "files": [],
+                             "note": "comparison (needs a code.analysis_r script — cross-dataset)"})
         else:
             # stat / artifact — rayleigh can't derive it from cell data; the report names it.
             manifest.append({"kind": "unrendered", "idx": i, "caption": cap,
@@ -264,7 +448,7 @@ def analyze(eid: str, exp: dict, df, param_cols: list, metric_cols: list,
         if src != script_path:
             shutil.copyfile(src, script_path)
     else:
-        text, manifest = generate_script(eid, exp, metric_cols, results)
+        text, manifest = generate_script(eid, exp, param_cols, metric_cols, results)
         script_path.write_text(text)
 
     ran, ok, rlog = _run(script_path, results)

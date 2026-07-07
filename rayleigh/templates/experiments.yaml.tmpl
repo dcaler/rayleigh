@@ -3,6 +3,12 @@
 # designdocs/PLANNING.md). Consumed by `conduct_exp` (runs the cells) and
 # `process_outputs` (renders the preregistered outputs + findings).
 #
+# THIS file is the preregistration of record — leave it as authored. A `rayleigh review` that
+# revises the design writes a COMPLETE revised copy as experiments_2.yaml (then _3, …); the
+# tools always load the highest-numbered one, so the diff against this file is the durable
+# record of what each review changed. A new *cycle* (init --new-cycle) archives all of these
+# and starts a fresh experiments.yaml under a new datestamp.
+#
 # The atomic unit is the EXPERIMENT: one question + one design + one metric + planned
 # outputs = one finding. A "sweep" is just the most common shape of an experiment's
 # `design`. Below the experiment, the design expands to CELLS (one param combo x one
@@ -69,11 +75,25 @@ experiments:
     question: "(the specific question this experiment answers)"
 
     design:
-      kind: sweep                  # sweep | conditions | oat | ablation
+      kind: sweep                  # sweep | conditions | oat | ablation | sobol
       axes:                        # each axis is a named list; cells = the cartesian product
         param_a: [lo, hi]
         param_b: [0.0, 0.5, 1.0]
       seeds: 16                    # Monte Carlo replications per cell
+      # CONTINUOUS design — kind: sobol. Instead of a discrete `axes:` lattice, draw `n_draws`
+      # space-filling points from a scrambled-Sobol (randomized QMC) sequence over a continuous
+      # box, per categorical arm. A cell = one (categorical combo x Sobol draw x seed). Estimate a
+      # SURFACE (see the `smooth: loess` outputs below) rather than reading a coarse grid.
+      # kind: sobol
+      # n_draws: 400               # continuous points (shared across arms, so draw j is comparable)
+      # sampler: sobol_scrambled   # sobol_scrambled (default) | sobol (unscrambled)
+      # categorical:               # discrete arms — Sobol draws are run once per combo
+      #   scenario: [baseline, treatment]
+      # continuous:                # the box each Sobol draw fills; {min,max} (or [lo,hi]) per param
+      #   param_a: {min: 0.05, max: 0.99}
+      #   param_b: {min: 0.0,  max: 1.0}
+      # seeds: 16
+      # (scipy gives real Sobol; without it, a numpy Latin-Hypercube fallback — both deterministic.)
 
     # fixed:                       # OPTIONAL — constant params merged into EVERY cell of this
     #   mode: monkey               #   experiment (not swept). Use for an arm selector or any
@@ -119,6 +139,42 @@ experiments:
       #   x: param_b               # column axis
       #   y: param_a               # row axis
       #   z: (metric)              # colour = the metric to show over the x*y plane
+      #   caption: "..."
+      # CONTINUOUS SURFACE (for kind: sobol) — add `smooth: loess` to fit a LOESS surface of the
+      # metric over the continuous (x, y) draws and render it as a filled phase diagram:
+      # - kind: figure
+      #   type: heatmap
+      #   x: param_a               # a continuous param
+      #   y: param_b               # a continuous param
+      #   z: (metric)
+      #   smooth: loess            # fit + predict a surface (required for continuous x/y)
+      #   z_scenario: treatment    # OPTIONAL — restrict the surface to one categorical arm
+      #   contours: [1.5, 2.0]     # OPTIONAL — draw threshold contour lines at these metric levels
+      #   contour_ci: bootstrap    # OPTIONAL — faint bootstrap-CI envelope around each contour
+      #   diverging: true          # OPTIONAL — centre the colour scale on 0 (for signed metrics)
+      #   caption: "..."
+      # DIFFERENCE map — a signed surface = one arm's surface minus another's (diverging, zero locus):
+      # - kind: figure
+      #   type: heatmap_diff
+      #   x: param_a
+      #   y: param_b
+      #   z: "(metric)[armA] - (metric)[armB]"   # metric[A] - metric[B]; arms are categorical values
+      #   contours: [0.0]          # OPTIONAL — the parity/zero-crossing locus
+      #   caption: "..."
+      # SMOOTHED LINE — LOESS curve(s) with a bootstrap CI band (for a continuous 1-D sweep):
+      # - kind: figure
+      #   type: line
+      #   x: param_a               # continuous
+      #   y: (metric)
+      #   smooth: loess
+      #   series: scenario         # OPTIONAL — one smoothed curve per categorical value
+      #   band: bootstrap_ci       # OPTIONAL — bootstrap confidence ribbon
+      #   hlines: [1.5, 2.0]       # OPTIONAL — horizontal reference lines
+      #   caption: "..."
+      # COMPARISON (cross-dataset, e.g. this cycle vs a prior one) is named but NOT auto-derived —
+      # produce it in a code.analysis_r script:
+      # - kind: comparison
+      #   against: "cycle YYMMDD / E2"
       #   caption: "..."
       # - kind: table
       #   rows: param_a
