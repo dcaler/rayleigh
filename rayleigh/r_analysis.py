@@ -13,7 +13,7 @@ Layout (all paths resolved by the script itself, so it runs from anywhere):
     results/analysis/data/<E>.csv     the tidy per-cell data (params · seed · metrics)
     results/analysis/<E>.R            the generated analysis script (edit + re-run freely)
     results/analysis/stats/           summary-stat and regression CSVs
-    results/figures/                  <E>_<i>_<slug>.png (+ .pdf vector)
+    results/figures/                  <E>_<i>_<slug>.png (+ .eps vector)
     results/tables/                   <E>_<i>_<slug>.csv
 
 Escape hatch: set `code.analysis_r: "path/to/custom.R"` (relative to results/) to run your own
@@ -85,8 +85,7 @@ tryCatch({
                    FUN=function(z) mean(z, na.rm=TRUE))
   p <- ggplot(agg, aes(factor(cx), factor(cy), fill=val)) + geom_tile() +
        scale_fill_viridis_c() + labs(x=$RX, y=$RY, fill=$RZ) + theme_minimal()
-  ggsave(file.path(FIG, "$PNG"), p, width=6, height=4, dpi=120)
-  ggsave(file.path(FIG, "$PDF"), p, width=6, height=4)
+  .save2(p, "$PNG", "$PDF")
 }, error=function(e) message("rayleigh: figure $I (heatmap) failed: ", conditionMessage(e)))
 """)
 
@@ -100,8 +99,7 @@ tryCatch({
   p <- ggplot(m, aes(cx, val$FACET_AES)) + geom_line() + geom_point() +
        geom_errorbar(aes(ymin=val-sd, ymax=val+sd), width=0) +
        labs(x=$RX, y=$RY$FACET_LAB) + theme_minimal()
-  ggsave(file.path(FIG, "$PNG"), p, width=6, height=4, dpi=120)
-  ggsave(file.path(FIG, "$PDF"), p, width=6, height=4)
+  .save2(p, "$PNG", "$PDF")
 }, error=function(e) message("rayleigh: figure $I (line) failed: ", conditionMessage(e)))
 """)
 
@@ -110,8 +108,7 @@ _FIG_BAR = Template("""
 tryCatch({
   agg <- aggregate(list(val=d[["$Y"]]), by=list(cx=d[["$X"]]), FUN=function(z) mean(z, na.rm=TRUE))
   p <- ggplot(agg, aes(factor(cx), val)) + geom_col() + labs(x=$RX, y=$RY) + theme_minimal()
-  ggsave(file.path(FIG, "$PNG"), p, width=6, height=4, dpi=120)
-  ggsave(file.path(FIG, "$PDF"), p, width=6, height=4)
+  .save2(p, "$PNG", "$PDF")
 }, error=function(e) message("rayleigh: figure $I (bar) failed: ", conditionMessage(e)))
 """)
 
@@ -120,8 +117,7 @@ _FIG_SCATTER = Template("""
 tryCatch({
   p <- ggplot(d, aes(d[["$X"]], d[["$Y"]])) + geom_point(alpha=0.6) +
        labs(x=$RX, y=$RY) + theme_minimal()
-  ggsave(file.path(FIG, "$PNG"), p, width=6, height=4, dpi=120)
-  ggsave(file.path(FIG, "$PDF"), p, width=6, height=4)
+  .save2(p, "$PNG", "$PDF")
 }, error=function(e) message("rayleigh: figure $I (scatter) failed: ", conditionMessage(e)))
 """)
 
@@ -185,9 +181,14 @@ _HELPERS = r"""
   }
   if (length(out)) do.call(rbind, out) else NULL
 }
-.save2 <- function(p, png, pdf){
-  ggsave(file.path(FIG, png), p, width=6.2, height=4.4, dpi=120)
-  ggsave(file.path(FIG, pdf), p, width=6.2, height=4.4)
+# save a figure as PNG (report embed) + EPS (vector companion). Prefer cairo_ps for the EPS so
+# semi-transparency (bootstrap CI envelopes/ribbons) survives; else ggsave's built-in EPS device.
+.save2 <- function(p, png, vec, width=6.2, height=4.4){
+  ggsave(file.path(FIG, png), p, width=width, height=height, dpi=120)
+  if (isTRUE(capabilities("cairo")))
+    ggsave(file.path(FIG, vec), p, width=width, height=height, device=grDevices::cairo_ps)
+  else
+    ggsave(file.path(FIG, vec), p, width=width, height=height)   # .eps -> ggsave's postscript EPS
 }
 # phase diagram: LOESS surface of `zc` over (xc, yc); optional scenario filter, contours (+boot CI), diverging scale
 .save_surface <- function(df, xc, yc, zc, selval, contours, diverging, bootB, png, pdf, lx, ly, lz){
@@ -348,7 +349,7 @@ def generate_script(eid: str, exp: dict, param_cols: list, metric_cols: list, re
         cap = str(o.get("caption") or "").strip()
         if kind == "figure":
             stem = f"{eid}_{i}_{_slug(cap or o.get('type', 'fig'))}"
-            png, pdf = f"{stem}.png", f"{stem}.pdf"
+            png, pdf = f"{stem}.png", f"{stem}.eps"
             block, err = _figure_block(o, i, o.get("x"), o.get("y"), png, pdf)
             if err:
                 manifest.append({"kind": "skipped", "idx": i, "caption": cap, "name": "",
@@ -424,7 +425,7 @@ def analyze(eid: str, exp: dict, df, param_cols: list, metric_cols: list,
     """Write the tidy data + the R script, run it, and collect what it produced.
 
     Returns {figures, tables, table_files, summary_df, script, data, ran, ok, log, unrendered}.
-    `figures` = [(png, [png,pdf], caption)]; `tables` = [(DataFrame, caption)] (preregistered
+    `figures` = [(png, [png,eps], caption)]; `tables` = [(DataFrame, caption)] (preregistered
     tables, regressions, and the summary stats — all computed in R); `table_files` = [(csv, cap)].
     """
     import pandas as pd
@@ -463,7 +464,7 @@ def analyze(eid: str, exp: dict, df, param_cols: list, metric_cols: list,
 
     if custom_r:                                         # convention-based collection
         for png in sorted((results / "figures").glob(f"{eid}_*.png")):
-            figures.append((png, [png, png.with_suffix(".pdf")], png.stem))
+            figures.append((png, [png, png.with_suffix(".eps")], png.stem))
         for csv in sorted((results / "tables").glob(f"{eid}_*.csv")):
             t = _read_table(csv)
             if t is not None:

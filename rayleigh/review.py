@@ -7,17 +7,22 @@ an interactive human+Claude session (Claude facilitates and lays out the evidenc
 judges and records the verdict). It is not an auto-verdict: rayleigh reports, it does not conclude.
 
 The record of the review is results/designdocs/REVIEW.md — the human's per-experiment verdict
-(accept / fix-presentation / fix-analysis / re-conduct / re-init) and the next action.
+(accept / fix-presentation / fix-analysis / re-conduct / re-init) and the next action. When the
+human approves an IN-CYCLE change (re-conduct / fix-analysis / a spec-editing fix-presentation),
+the session also writes the revised spec as a COMPLETE new experiments_<N>.yaml (leaving the base
+experiments.yaml as the preregistration of record; the diff is what the review changed). re-init
+is a NEW cycle (init --new-cycle), not an iterated spec; accept writes nothing.
 
 FOLD-FORWARD (parseNplan-style). Deciding is the human's job; carrying the decision out is
 rayleigh's. When the interactive session ends, `review` reads the verdicts back out of REVIEW.md
 and QUEUES the follow-on work into trundlr as a dependency chain — exactly like rabbitHole's
-parseNplan queues gather/collect/revise/comment. Each verdict maps to a pipeline of rayleigh
-verbs; runner steps (conduct_exp, process_outputs) carry a `rayleigh <verb>` command the trundlr
-runner executes when its dependency clears; the terminal `review` is a command-less HUMAN gate that
-waits in your queue. So the human re-does nothing — the runner re-runs the work and you re-enter
-only at the next review. The revised spec the chain runs against is the review's experiments_<N>.yaml
-(the active spec), so the re-run automatically picks up the human-approved changes.
+parseNplan queues gather/collect/revise/comment (parseNplan likewise writes the iterated litrev_<N>
+config itself). Each verdict maps to a pipeline of rayleigh verbs; runner steps (conduct_exp,
+process_outputs) carry a `rayleigh <verb>` command the trundlr runner executes when its dependency
+clears; the terminal `review` is a command-less HUMAN gate that waits in your queue. So the human
+re-does nothing — the runner re-runs the work and you re-enter only at the next review. The chain
+runs against the review's experiments_<N>.yaml (the active spec), so it automatically picks up the
+human-approved changes.
 """
 
 import re
@@ -70,14 +75,26 @@ REVIEW_PROMPT = (
     "Record MY calls into results/designdocs/REVIEW.md: per experiment a verdict (accept / "
     "fix-presentation / fix-analysis / re-conduct / re-init), the reason, and the concrete next "
     "action. "
-    "Four hard rules: (1) HUMAN-LED — never record a verdict I did not give, and never sign off "
-    "for me; (2) NEVER edit experiments.yaml or the cell data to improve a result — propose spec "
-    "changes and let me decide; (3) REVIEW REPORTS, IT DOES NOT PRODUCE ARTIFACTS — you may READ a "
-    "raw cell to check a value (ephemeral, read-only), but do NOT write any script, figure, table, "
-    "or fix into results/. Regenerating analytical products is `process_outputs`' job (it runs the "
-    "R engine); changing the design or data is `conduct_exp`/`init`'s — the verdict I give routes "
-    "to the right verb, which regenerates them reproducibly. Doing the fix here would be the next "
-    "step's work, done tool-led and unreproducibly. (4) never state an unverified claim as fact. "
+    "THEN CARRY MY DECISION INTO THE SPEC. If I approve an IN-CYCLE change on any experiment — a "
+    "`re-conduct` (new design/data), a `fix-analysis` (new metric/analysis), or a `fix-presentation` "
+    "that needs a spec edit (a changed output/figure) — write the revised spec to a NEW file "
+    "results/designdocs/experiments_<N>.yaml (N = one more than the highest existing; the base "
+    "experiments.yaml counts as 1). It MUST be a COMPLETE, standalone spec: copy the current active "
+    "experiments file whole and merge in ONLY the changes I approved — nothing else; an experiment I "
+    "marked `accept` must stay byte-identical. Leave results/designdocs/experiments.yaml untouched as "
+    "the preregistration of record — the diff between it and experiments_<N>.yaml is the record of "
+    "what this review changed. Do NOT write an iterated spec for an all-`accept` review (no change) or "
+    "for `re-init` (that is a NEW cycle — I run `rayleigh init --new-cycle`, not an in-cycle revision). "
+    "Show me the diff and let me confirm before you write the file. "
+    "Four hard rules: (1) HUMAN-LED — never record a verdict I did not give, never sign off for me, "
+    "and put ONLY changes I approved into the revised spec (never invent one, and never to make a "
+    "result look better); (2) DO NOT edit experiments.yaml (the preregistration of record) or the "
+    "cell data — an approved change goes ONLY into a complete new experiments_<N>.yaml; (3) THAT "
+    "REVISED SPEC IS THE ONLY ARTIFACT YOU MAY WRITE — you may READ a raw cell to check a value "
+    "(ephemeral, read-only), but do NOT write any figure, table, analysis script, or other fix into "
+    "results/. Regenerating analytical products is `process_outputs`' job (it runs the R engine); "
+    "running the new design/data is `conduct_exp`/`init`'s — the verdict routes to the verb that "
+    "regenerates them reproducibly. (4) never state an unverified claim as fact. "
     "Start by reading only RESULTS.md, then walk me through REVIEW.md — reaching for experiments.yaml, "
     "findings.json, the figures, or the cell data only as each check calls for it."
 )
