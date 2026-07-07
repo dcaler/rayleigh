@@ -35,10 +35,14 @@ REVIEW_PROMPT = (
     "just produced with `rayleigh process_outputs`. You FACILITATE; the human judges and decides. "
     "Do not rubber-stamp, and do not adjudicate the results yourself — rayleigh reports, it does "
     "not conclude. "
-    "First read the INTENT then the REPORT: results/designdocs/experiments.yaml (the preregistered "
-    "questions, metrics, and expected_direction), then results/RESULTS.md, results/findings.json, "
-    "the results/*_results_*.docx, and results/figures|tables/. Inspect the actual cell data under "
-    "results/data/<E>/ whenever you need to check a specific number. "
+    "START NARROW: read ONLY the results document first — results/RESULTS.md (or, if you prefer the "
+    "formatted version, the results/*_results_*.docx). That report is the spine of the review; it "
+    "already carries each experiment's question, preregistered metric, and expected_direction, so it "
+    "is enough to begin. Do NOT bulk-load everything else up front. Pull in the deeper artifacts "
+    "ONLY when a specific check in front of me needs them, one experiment at a time: "
+    "results/designdocs/experiments.yaml for the EXACT preregistered spec, results/findings.json for "
+    "a computed value, results/figures|tables/ for a plot under discussion, and the raw cell data "
+    "under results/data/<E>/ for a spot-check. Read the minimum that answers the question at hand. "
     "Then walk me, experiment by experiment, through results/designdocs/REVIEW.md — for each one "
     "put concrete evidence in front of me and let ME reach the verdict: (1) is it measuring the "
     "intended thing (metric + reduce, figure axes vs the question)? (2) did it cover the declared "
@@ -56,7 +60,8 @@ REVIEW_PROMPT = (
     "Three hard rules: (1) HUMAN-LED — never record a verdict I did not give, and never sign off "
     "for me; (2) NEVER edit experiments.yaml or the cell data to improve a result — propose spec "
     "changes and let me decide; (3) never state an unverified claim as fact. "
-    "Start by reading experiments.yaml and RESULTS.md, then walk me through REVIEW.md."
+    "Start by reading only RESULTS.md, then walk me through REVIEW.md — reaching for experiments.yaml, "
+    "findings.json, the figures, or the cell data only as each check calls for it."
 )
 
 
