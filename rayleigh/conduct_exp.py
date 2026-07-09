@@ -24,10 +24,12 @@ import multiprocessing as mp
 import os
 import re
 import signal
+import statistics
 import subprocess
 import sys
 import threading
 import time
+from collections import Counter
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from concurrent.futures.process import BrokenProcessPool
 from datetime import datetime, timezone
@@ -40,10 +42,118 @@ from rayleigh.spec import active_spec_path
 
 DEFAULT_WORKERS = 8
 DEFAULT_TEMPLATE = "data/{experiment}/{cellkey}_seed{seed}.parquet"
+PROGRESS_EVERY_S = 15.0     # heartbeat cadence while the pool grinds (see _Progress)
 
 
 def log(msg: str) -> None:
     print(f"[rayleigh conduct_exp] {msg}", flush=True)
+
+
+# --------------------------------------------------------------------- run narration
+# A 6400-cell experiment used to print three lines: the cell count, the memory guard, and
+# "done" — an hour later. Nothing said WHICH spec was active, what the design expanded to,
+# or whether the run was moving. PROGRESS.md is no substitute (it is written only at the
+# end, and an interrupted chain leaves it lying). So conduct_exp narrates itself: what it
+# read, what it expanded, and a rate/ETA heartbeat while the pool runs.
+def _dur(seconds: float) -> str:
+    """Compact human duration: 24ms / 4.2s / 3m12s / 1h04m. Sub-second cells are common
+    (a fast adapter), and "0.0s" tells you nothing about a 90-cell vs 90000-cell budget."""
+    s = max(0.0, float(seconds))
+    if s < 1:
+        return f"{s * 1000:.0f}ms"
+    if s < 60:
+        return f"{s:.1f}s"
+    m, s = divmod(int(s), 60)
+    if m < 60:
+        return f"{m}m{s:02d}s"
+    h, m = divmod(m, 60)
+    return f"{h}h{m:02d}m"
+
+
+def _levels(vals, cap: int = 8) -> str:
+    vals = list(vals)
+    shown = ", ".join(str(v) for v in vals[:cap])
+    return f"[{shown}]" if len(vals) <= cap else f"[{shown}, … +{len(vals) - cap} more]"
+
+
+class _Progress:
+    """Heartbeat for a long pool run: completed/total, failures, throughput, ETA.
+
+    Rate-limited to one line per PROGRESS_EVERY_S (plus a final line at 100%), so a 20-cell
+    smoke test stays quiet and a 6400-cell grid stays legible. The ETA is a naive
+    remaining/rate — honest enough to tell "20 minutes" from "tomorrow", which is the only
+    question being asked of it."""
+
+    def __init__(self, total: int, pass_label: str = ""):
+        self.total = max(1, total)
+        self.pass_label = pass_label
+        self.n = self.failed = 0
+        self.t0 = self.last = time.monotonic()
+
+    def tick(self, ok: bool) -> None:
+        self.n += 1
+        if not ok:
+            self.failed += 1
+        now = time.monotonic()
+        if now - self.last < PROGRESS_EVERY_S and self.n < self.total:
+            return
+        self.last = now
+        elapsed = now - self.t0
+        rate = self.n / elapsed if elapsed > 0 else 0.0
+        eta = (self.total - self.n) / rate if rate > 0 else 0.0
+        fail = f" · {self.failed} failed" if self.failed else ""
+        log(f"  progress{self.pass_label}: {self.n}/{self.total} cells "
+            f"({100 * self.n / self.total:.0f}%){fail} · {rate:.1f} cells/s · "
+            f"elapsed {_dur(elapsed)} · ETA {_dur(eta)}")
+
+
+def _describe_design(exp: dict, n_cells: int) -> list[str]:
+    """Human-readable expansion of the design — what the cell count is MADE of, so a wrong
+    axis or a dropped `fixed:` is visible in the log before an hour of compute goes into it."""
+    design = exp.get("design") or {}
+    kind = str(design.get("kind", "sweep"))
+    seeds = int(exp.get("seeds", design.get("seeds", 1)) or 1)
+    out = []
+    if kind == "sweep":
+        axes = design.get("axes") or {}
+        combos = 1
+        for v in axes.values():
+            combos *= len(v)
+        shape = " x ".join(f"{k}({len(v)})" for k, v in axes.items()) or "(no axes)"
+        out.append(f"design: sweep · {shape} = {combos} combo(s) x {seeds} seed(s) = {n_cells} cells")
+        out += [f"  axis {k}: {_levels(v)}" for k, v in axes.items()]
+    elif kind == "conditions":
+        conds = design.get("conditions") or []
+        out.append(f"design: conditions · {len(conds)} condition(s) x {seeds} seed(s) "
+                   f"= {n_cells} cells")
+        out += [f"  condition: {dict(c)}" for c in conds[:8]]
+    elif kind == "sobol":
+        cont, cats = design.get("continuous") or {}, design.get("categorical") or {}
+        n_draws = int(design.get("n_draws", 256))
+        arms = 1
+        for v in cats.values():
+            arms *= len(v)
+        out.append(f"design: sobol · {n_draws} draw(s) x {arms} arm(s) x {seeds} seed(s) "
+                   f"= {n_cells} cells")
+        out.append(f"  sampler: {design.get('sampler', 'sobol_scrambled')} "
+                   f"(sampler_seed {int(design.get('sampler_seed', 0))}) · draws shared across arms")
+        for k, b in cont.items():
+            lo, hi = (b.get("min"), b.get("max")) if isinstance(b, dict) else (b[0], b[1])
+            out.append(f"  continuous {k}: [{lo}, {hi}]")
+        out += [f"  categorical {k}: {_levels(v)}" for k, v in cats.items()]
+    else:
+        out.append(f"design: {kind} · {n_cells} cells")
+    fixed = {}
+    for src in (design.get("fixed"), exp.get("fixed")):
+        if isinstance(src, dict):
+            fixed.update(src)
+    if fixed:
+        out.append("  fixed: " + ", ".join(f"{k}={v}" for k, v in fixed.items()))
+    metric = exp.get("metric") or {}
+    if metric.get("name"):
+        extra = len(metric.get("secondary") or [])
+        out.append(f"  metric: {metric['name']}" + (f" (+{extra} secondary)" if extra else ""))
+    return out
 
 
 # --------------------------------------------------------------------- resource sizing
@@ -474,6 +584,7 @@ def _execute_cell(job: dict) -> dict:
     outs = {n: Path(p) for n, p in job["outputs"].items()}
     tmps = {n: _partial(p) for n, p in outs.items()}
     primary = next(iter(outs.values()))
+    t0 = time.monotonic()
     for p in outs.values():
         p.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -513,14 +624,16 @@ def _execute_cell(job: dict) -> dict:
         for n, tmp in tmps.items():              # publish atomically (same dir -> rename is atomic)
             os.replace(tmp, outs[n])
         _write_provenance(job, outs, primary)
-        return {"output": str(primary), "status": "done", "error": None}
+        return {"output": str(primary), "status": "done", "error": None,
+                "seconds": time.monotonic() - t0}
     except Exception as e:                       # noqa: BLE001 — report, don't crash the pool
         for t in tmps.values():                  # don't leave partials from a failed run lying around
             try:
                 t.unlink()
             except OSError:
                 pass
-        return {"output": str(primary), "status": "failed", "error": f"{type(e).__name__}: {e}"}
+        return {"output": str(primary), "status": "failed", "error": f"{type(e).__name__}: {e}",
+                "seconds": time.monotonic() - t0}
 
 
 def _write_provenance(job: dict, outs: dict, primary: Path) -> None:
@@ -614,9 +727,31 @@ def run_conduct_exp(args) -> int:
     todo = [c for c in cells if not all(p.exists() for p in c["outputs"].values())]
     done_already = len(cells) - len(todo)
 
+    # ---- narrate what we read and what it expanded to, BEFORE burning compute on it -------
+    spec_path = active_spec_path(results / "designdocs")
+    cyc = spec.get("cycle")
+    log(f"spec: {spec_path.relative_to(root) if spec_path.is_relative_to(root) else spec_path}"
+        + (f" · cycle {cyc}" if cyc else "")
+        + (f" · project {spec['project']}" if spec.get("project") else ""))
+    log(f"experiment {eid}" + (f' — "{exp["title"]}"' if exp.get("title") else "")
+        + f" · mode={exp.get('mode', '?')} · resource={exp.get('resource', 'cpu')}"
+        + (f" · depends_on {exp['depends_on']}" if exp.get("depends_on") else ""))
+    for line in _describe_design(exp, len(cells)):
+        log(line)
+
+    sha = _code_sha(code_dir)
+    tgt = adapter.get("entrypoint") or adapter.get("command") or "?"
+    log(f"adapter: kind={kind} · {tgt} · code {code_dir} (sha {sha[:10]})")
     nout = len(cells[0]["outputs"]) if cells else 1
-    log(f"experiment {eid}: {len(cells)} cells ({done_already} already done, {len(todo)} to run) "
-        f"· kind={kind} · {nout} output(s)/cell")
+    templates = adapter.get("outputs") or {"output": adapter.get("output_template") or DEFAULT_TEMPLATE}
+    for name, tmpl in templates.items():
+        log(f"  output[{name}]: {tmpl}")
+    if cells:
+        ex = cells[0]
+        log(f"  e.g. cell {ex['cellkey']} seed={ex['seed']} -> "
+            + ", ".join(str(p.relative_to(results)) for p in ex["outputs"].values()))
+    log(f"cells: {len(cells)} total · {done_already} already done · {len(todo)} to run "
+        f"· {nout} output(s)/cell")
     log(f"resources: {worker_report}")
 
     if getattr(args, "dry_run", False):
@@ -635,7 +770,6 @@ def run_conduct_exp(args) -> int:
         log("nothing to run — all cells already have output.")
         return 0
 
-    sha = _code_sha(code_dir)
     jobs = [{
         "experiment": eid, "kind": kind, "multi": multi, "params": c["params"], "seed": c["seed"],
         "outputs": {n: str(p) for n, p in c["outputs"].items()},
@@ -652,26 +786,39 @@ def run_conduct_exp(args) -> int:
     as_ceiling = 0
     watch_floor = 0.0
     run_jobs = jobs
+    t_start = time.monotonic()
 
     # MEASURE before fanning out: run the first cell alone, size the pool from its real footprint,
     # and derive the runaway backstop + watchdog floor. This is what keeps a wide pool from OOM-ing
     # the box (see the memory-guard module notes for the three layers).
     if mem_guard:
+        log(f"memory guard: measuring pilot cell {todo[0]['cellkey']} seed={todo[0]['seed']} "
+            f"(1 cell, alone) to size the pool …")
         peak_rss, peak_vsize, pilot_res = _measure_pilot(jobs[0])
         results_out.append(pilot_res)
         run_jobs = jobs[1:]
         workers, as_ceiling, watch_floor, size_report = _size_by_memory(
             peak_rss, peak_vsize, workers, resource_kind)
+        log(f"memory guard: pilot {pilot_res['status']} in {_dur(pilot_res.get('seconds', 0))}")
         log(f"memory guard: {size_report}")
         if pilot_res["status"] == "failed":
             log(f"  ⚠ pilot cell failed — {pilot_res['error']}")
+        elif run_jobs:                       # a crude but useful up-front cost estimate
+            serial = pilot_res.get("seconds", 0) * len(run_jobs)
+            log(f"estimate: ~{_dur(pilot_res.get('seconds', 0))}/cell x {len(run_jobs)} cells "
+                f"/ {workers} workers ≈ {_dur(serial / max(1, workers))} (pilot-rate, revised live)")
     else:
         log("memory guard: DISABLED (--no-mem-guard) — pool sized by --workers only, no RAM ceiling")
 
     if not run_jobs:
         pass
     elif not mem_guard and workers <= 1:
-        results_out += [_execute_cell(j) for j in run_jobs]     # in-process: easiest to debug
+        prog = _Progress(len(run_jobs))                         # in-process: easiest to debug
+        log(f"running {len(run_jobs)} cell(s) serially, in-process")
+        for j in run_jobs:
+            r = _execute_cell(j)
+            results_out.append(r)
+            prog.tick(r["status"] == "done")
     else:
         # Route even the serial (workers==1) guarded case through the pool so the RLIMIT_AS
         # ceiling lands on a *worker*, never on rayleigh's own process. The watchdog may SIGKILL a
@@ -687,6 +834,10 @@ def run_conduct_exp(args) -> int:
             before = len(remaining)
             stop_evt = threading.Event()
             killed: list = []
+            label = f" (pass {attempt})" if attempt > 1 else ""
+            log(f"running {len(remaining)} cell(s) on {cur_workers} worker(s)"
+                f"{label} · heartbeat every {_dur(PROGRESS_EVERY_S)}")
+            prog = _Progress(len(remaining), pass_label=label)
             with ProcessPoolExecutor(max_workers=cur_workers,
                                      initializer=_limit_address_space,
                                      initargs=(as_ceiling,)) as ex:
@@ -698,7 +849,9 @@ def run_conduct_exp(args) -> int:
                 futs = [ex.submit(_execute_cell, j) for j in remaining]
                 try:
                     for f in as_completed(futs):
-                        results_out.append(f.result())
+                        r = f.result()
+                        results_out.append(r)
+                        prog.tick(r["status"] == "done")
                 except BrokenProcessPool:
                     log("memory watchdog broke the pool after a kill — completed cells are saved; "
                         "rebuilding to finish the rest.")
@@ -713,14 +866,21 @@ def run_conduct_exp(args) -> int:
                 cur_workers = max(1, cur_workers // 2)     # relieve pressure on the retry
                 log(f"memory watchdog: retrying {len(remaining)} cell(s) with {cur_workers} worker(s).")
             elif remaining and len(remaining) == before:
-                # No progress this pass and we can't narrow further — one cell won't fit. Stop
-                # rather than loop forever; mark the rest failed so the run reports honestly.
-                log(f"memory guard: {len(remaining)} cell(s) can't fit even at {cur_workers} "
-                    f"worker(s) — giving up on them (see --no-mem-guard to override).")
-                for j in remaining:
-                    primary = next(iter(j["outputs"].values()))
-                    results_out.append({"output": str(primary), "status": "failed",
-                                        "error": "MemoryError: cell exceeds RAM budget under the guard"})
+                # No cell landed this pass. Stop rather than loop forever — but WHY nothing landed
+                # decides what we say. Only a watchdog kill means "didn't fit"; if nobody was
+                # killed the cells simply raised, and their real exceptions are already recorded.
+                # (Relabelling those as MemoryError would send you hunting RAM for an adapter bug.)
+                if killed:
+                    log(f"memory guard: {len(remaining)} cell(s) can't fit even at {cur_workers} "
+                        f"worker(s) — giving up on them (see --no-mem-guard to override).")
+                    for j in remaining:
+                        primary = next(iter(j["outputs"].values()))
+                        results_out.append(
+                            {"output": str(primary), "status": "failed",
+                             "error": "MemoryError: cell exceeds RAM budget under the guard"})
+                else:
+                    log(f"{len(remaining)} cell(s) produced no output and no worker was killed — "
+                        f"the cells themselves failed; see the per-cell errors below.")
                 break
 
     # Accounting is EXISTENCE-based (a cell succeeded iff its outputs are on disk): a watchdog kill
@@ -738,13 +898,31 @@ def run_conduct_exp(args) -> int:
         else:
             failed.append({"output": primary,
                            "error": errors.get(primary, "no output (killed or errored)")})
+    wall = time.monotonic() - t_start
     log(f"done: {ran} succeeded, {len(failed)} failed, {done_already} skipped (pre-existing).")
-    for r in failed[:10]:
-        log(f"  FAIL {Path(r['output']).name}: {r['error']}")
+    log(f"wall: {_dur(wall)} · {ran / wall if wall > 0 else 0:.1f} cells/s "
+        f"· {len(run_jobs) + (1 if mem_guard else 0)} cell(s) executed this pass")
+    secs = sorted(r["seconds"] for r in results_out if r.get("seconds") is not None)
+    if secs:
+        log(f"per-cell: mean {_dur(statistics.fmean(secs))} · median {_dur(statistics.median(secs))} "
+            f"· min {_dur(secs[0])} · max {_dur(secs[-1])}"
+            + (f" · p95 {_dur(secs[int(0.95 * (len(secs) - 1))])}" if len(secs) >= 20 else ""))
+    if failed:
+        # Group by exception type first: 300 identical FileNotFoundErrors are one bug, not 300.
+        kinds = Counter(str(r["error"]).split(":", 1)[0] for r in failed)
+        log("failures by type: " + ", ".join(f"{k} x{n}" for k, n in kinds.most_common()))
+        for r in failed[:10]:
+            log(f"  FAIL {Path(r['output']).name}: {r['error']}")
+        if len(failed) > 10:
+            log(f"  … and {len(failed) - 10} more failed cell(s)")
 
     status = {
         "experiment": eid, "cells_total": len(cells), "succeeded_this_run": ran,
         "failed_this_run": len(failed), "skipped_preexisting": done_already,
+        "wall_seconds": round(wall, 1),
+        "cell_seconds_mean": round(statistics.fmean(secs), 3) if secs else None,
+        "cell_seconds_max": round(secs[-1], 3) if secs else None,
+        "workers": workers, "spec": str(spec_path.name), "code_sha": sha,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
     status_path = results / "data" / eid / "_status.json"
