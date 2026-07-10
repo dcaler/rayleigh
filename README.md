@@ -1,3 +1,8 @@
+> [!IMPORTANT]
+> **Development has moved to [dcaler/haarpi](https://github.com/dcaler/haarpi).**
+> This repo is archived; its full history continues there under
+> [`packages/rayleigh/`](https://github.com/dcaler/haarpi/tree/main/packages/rayleigh).
+
 # rayleigh
 
 An **experiment designer & runner**. Point it at a codebase (usually a raster-built model
